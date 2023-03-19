@@ -5,13 +5,9 @@ const mem = std.mem;
 
 pub fn build(b: *zbs.Builder) void {
     const target = b.standardTargetOptions(.{});
-    const mode = b.standardReleaseOptions();
+    const optimize = b.standardOptimizeOption(.{});
 
     const scanner = ScanProtocolsStep.create(b);
-    const wayland = zbs.Pkg{
-        .name = "wayland",
-        .source = .{ .generated = &scanner.result },
-    };
 
     scanner.generate("wl_compositor", 1);
     scanner.generate("wl_shm", 1);
@@ -19,12 +15,17 @@ pub fn build(b: *zbs.Builder) void {
     scanner.generate("wl_output", 1);
 
     inline for ([_][]const u8{ "globals", "list", "listener", "seats" }) |example| {
-        const exe = b.addExecutable(example, "example/" ++ example ++ ".zig");
-        exe.setTarget(target);
-        exe.setBuildMode(mode);
+        const exe = b.addExecutable(.{
+            .name = example,
+            .root_source_file = .{.path = "example/" ++ example ++ ".zig"},
+            .target = target,
+            .optimize = optimize
+        });
 
         exe.step.dependOn(&scanner.step);
-        exe.addPackage(wayland);
+        exe.addAnonymousModule("wayland", .{
+            .source_file = .{ .generated = &scanner.result}
+        });
         scanner.addCSource(exe);
         exe.linkLibC();
         exe.linkSystemLibrary("wayland-client");
@@ -34,22 +35,30 @@ pub fn build(b: *zbs.Builder) void {
 
     const test_step = b.step("test", "Run the tests");
     {
-        const scanner_tests = b.addTest("src/scanner.zig");
-        scanner_tests.setTarget(target);
-        scanner_tests.setBuildMode(mode);
+        const scanner_tests = b.addTest(.{
+            .root_source_file = .{ .path = "src/scanner.zig"},
+            .target = target,
+            .optimize = optimize
+        });
 
         scanner_tests.step.dependOn(&scanner.step);
-        scanner_tests.addPackage(wayland);
+        scanner_tests.addAnonymousModule("wayland", .{
+            .source_file = .{ .generated = &scanner.result}
+        });
 
         test_step.dependOn(&scanner_tests.step);
     }
     {
-        const ref_all = b.addTest("src/ref_all.zig");
-        ref_all.setTarget(target);
-        ref_all.setBuildMode(mode);
+        const ref_all = b.addTest(.{
+            .root_source_file = .{ .path = "src/ref_all.zig"},
+            .target = target,
+            .optimize = optimize
+        });
 
         ref_all.step.dependOn(&scanner.step);
-        ref_all.addPackage(wayland);
+        ref_all.addAnonymousModule("wayland", .{
+            .source_file = .{ .generated = &scanner.result}
+        });
         scanner.addCSource(ref_all);
         ref_all.linkLibC();
         ref_all.linkSystemLibrary("wayland-client");
@@ -82,7 +91,12 @@ pub const ScanProtocolsStep = struct {
         const self = ally.create(ScanProtocolsStep) catch oom();
         self.* = .{
             .builder = builder,
-            .step = zbs.Step.init(.custom, "Scan Protocols", ally, make),
+            .step = zbs.Step.init(.{
+                .id = .custom,
+                .name = "Scan Protocols",
+                .owner = builder,
+                .makeFn = make
+            }),
             .result = .{ .step = &self.step, .path = null },
             .protocol_paths = std.ArrayList([]const u8).init(ally),
             .system_protocols = std.ArrayList([]const u8).init(ally),
@@ -118,16 +132,17 @@ pub const ScanProtocolsStep = struct {
         self.artifacts.append(obj) catch oom();
     }
 
-    fn make(step: *zbs.Step) !void {
+    fn make(step: *zbs.Step, progress:*std.Progress.Node) !void {
+        _ = progress;
         const self = @fieldParentPtr(ScanProtocolsStep, "step", step);
         const ally = self.builder.allocator;
 
-        const wayland_dir = mem.trim(u8, try self.builder.exec(
+        const wayland_dir = mem.trim(u8, self.builder.exec(
             &[_][]const u8{ "pkg-config", "--variable=pkgdatadir", "wayland-scanner" },
-        ), &std.ascii.spaces);
-        const wayland_protocols_dir = mem.trim(u8, try self.builder.exec(
+        ), &std.ascii.whitespace);
+        const wayland_protocols_dir = mem.trim(u8, self.builder.exec(
             &[_][]const u8{ "pkg-config", "--variable=pkgdatadir", "wayland-protocols" },
-        ), &std.ascii.spaces);
+        ), &std.ascii.whitespace);
 
         const wayland_xml = try fs.path.join(ally, &[_][]const u8{ wayland_dir, "wayland.xml" });
         try self.protocol_paths.append(wayland_xml);
@@ -137,9 +152,9 @@ pub const ScanProtocolsStep = struct {
             try self.protocol_paths.append(absolute_path);
         }
 
-        const out_path = try fs.path.join(ally, &[_][]const u8{ self.builder.cache_root, "zig-wayland" });
+        const out_path = try fs.path.join(ally, &[_][]const u8{ self.builder.cache_root.path.?, "zig-wayland" });
 
-        var root_dir = try fs.cwd().openDir(self.builder.build_root, .{});
+        var root_dir = try fs.cwd().openDir(self.builder.build_root.path.?, .{});
         defer root_dir.close();
         var out_dir = try root_dir.makeOpenPath(out_path, .{});
         defer out_dir.close();
@@ -149,7 +164,7 @@ pub const ScanProtocolsStep = struct {
         // we can stop generating/linking C code.
         for (self.protocol_paths.items) |protocol_path| {
             const code_path = self.getCodePath(protocol_path);
-            _ = try self.builder.exec(
+            _ = self.builder.exec(
                 &[_][]const u8{ "wayland-scanner", "private-code", protocol_path, code_path },
             );
             for (self.artifacts.items) |artifact| {
@@ -167,8 +182,7 @@ pub const ScanProtocolsStep = struct {
         const basename_no_ext = basename[0..(basename.len - 4)];
         const code_filename = std.fmt.allocPrint(ally, "{s}-protocol.c", .{basename_no_ext}) catch oom();
         return fs.path.join(ally, &[_][]const u8{
-            self.builder.build_root,
-            self.builder.cache_root,
+            self.builder.cache_root.path.?,
             "zig-wayland",
             code_filename,
         }) catch oom();
