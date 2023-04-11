@@ -72,7 +72,6 @@ pub fn build(b: *zbs.Builder) void {
 pub const ScanProtocolsStep = struct {
     const scanner = @import("src/scanner.zig");
 
-    builder: *zbs.Builder,
     step: zbs.Step,
     result: zbs.GeneratedFile,
 
@@ -90,7 +89,6 @@ pub const ScanProtocolsStep = struct {
         const ally = builder.allocator;
         const self = ally.create(ScanProtocolsStep) catch oom();
         self.* = .{
-            .builder = builder,
             .step = zbs.Step.init(.{
                 .id = .custom,
                 .name = "Scan Protocols",
@@ -135,12 +133,12 @@ pub const ScanProtocolsStep = struct {
     fn make(step: *zbs.Step, progress:*std.Progress.Node) !void {
         _ = progress;
         const self = @fieldParentPtr(ScanProtocolsStep, "step", step);
-        const ally = self.builder.allocator;
+        const ally = step.owner.allocator;
 
-        const wayland_dir = mem.trim(u8, self.builder.exec(
+        const wayland_dir = mem.trim(u8, step.owner.exec(
             &[_][]const u8{ "pkg-config", "--variable=pkgdatadir", "wayland-scanner" },
         ), &std.ascii.whitespace);
-        const wayland_protocols_dir = mem.trim(u8, self.builder.exec(
+        const wayland_protocols_dir = mem.trim(u8, step.owner.exec(
             &[_][]const u8{ "pkg-config", "--variable=pkgdatadir", "wayland-protocols" },
         ), &std.ascii.whitespace);
         var man = step.owner.cache.obtain();
@@ -164,7 +162,7 @@ pub const ScanProtocolsStep = struct {
         const digest = man.final();
         const out_path = try step.owner.cache_root.join(step.owner.allocator, &.{"zig-wayland", &digest });
         if (!cache_hit) {
-            var root_dir = try fs.cwd().openDir(self.builder.build_root.path.?, .{});
+            var root_dir = try fs.cwd().openDir(step.owner.build_root.path.?, .{});
             defer root_dir.close();
             var out_dir = try root_dir.makeOpenPath(out_path, .{});
             defer out_dir.close();
@@ -176,7 +174,7 @@ pub const ScanProtocolsStep = struct {
         for (self.protocol_paths.items) |protocol_path| {
             const code_path = self.getCodePath(protocol_path, &digest);
             if (!cache_hit) {
-                _ = self.builder.exec(
+                _ = step.owner.exec(
                     &[_][]const u8{ "wayland-scanner", "private-code", protocol_path, code_path },
                 );
             }
@@ -192,13 +190,13 @@ pub const ScanProtocolsStep = struct {
     }
 
     fn getCodePath(self: *ScanProtocolsStep, xml_in_path: []const u8, digest: []const u8) []const u8 {
-        const ally = self.builder.allocator;
+        const ally = self.step.owner.allocator;
         // Extension is .xml, so slice off the last 4 characters
         const basename = fs.path.basename(xml_in_path);
         const basename_no_ext = basename[0..(basename.len - 4)];
         const code_filename = std.fmt.allocPrint(ally, "{s}-protocol.c", .{basename_no_ext}) catch oom();
         return fs.path.join(ally, &[_][]const u8{
-            self.builder.cache_root.path.?,
+            self.step.owner.cache_root.path.?,
             "zig-wayland",
             digest,
             code_filename,
