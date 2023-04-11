@@ -143,6 +143,8 @@ pub const ScanProtocolsStep = struct {
         const wayland_protocols_dir = mem.trim(u8, self.builder.exec(
             &[_][]const u8{ "pkg-config", "--variable=pkgdatadir", "wayland-protocols" },
         ), &std.ascii.whitespace);
+        var man = step.owner.cache.obtain();
+        defer man.deinit();
 
         const wayland_xml = try fs.path.join(ally, &[_][]const u8{ wayland_dir, "wayland.xml" });
         try self.protocol_paths.append(wayland_xml);
@@ -151,31 +153,45 @@ pub const ScanProtocolsStep = struct {
             const absolute_path = try fs.path.join(ally, &[_][]const u8{ wayland_protocols_dir, relative_path });
             try self.protocol_paths.append(absolute_path);
         }
-
-        const out_path = try fs.path.join(ally, &[_][]const u8{ self.builder.cache_root.path.?, "zig-wayland" });
-
-        var root_dir = try fs.cwd().openDir(self.builder.build_root.path.?, .{});
-        defer root_dir.close();
-        var out_dir = try root_dir.makeOpenPath(out_path, .{});
-        defer out_dir.close();
-        try scanner.scan(root_dir, out_dir, self.protocol_paths.items, self.targets.items);
+        for (self.protocol_paths.items) |protocol_path| {
+            _ = try man.addFile(protocol_path, null);
+        }
+        for (self.targets.items) |target| {
+            man.hash.addBytes(target.name);
+            man.hash.add(target.version);
+        }
+        const cache_hit = try step.cacheHit(&man);
+        const digest = man.final();
+        const out_path = try step.owner.cache_root.join(step.owner.allocator, &.{"zig-wayland", &digest });
+        if (!cache_hit) {
+            var root_dir = try fs.cwd().openDir(self.builder.build_root.path.?, .{});
+            defer root_dir.close();
+            var out_dir = try root_dir.makeOpenPath(out_path, .{});
+            defer out_dir.close();
+            try scanner.scan(root_dir, out_dir, self.protocol_paths.items, self.targets.items);
+        }
 
         // Once https://github.com/ziglang/zig/issues/131 is implemented
         // we can stop generating/linking C code.
         for (self.protocol_paths.items) |protocol_path| {
-            const code_path = self.getCodePath(protocol_path);
-            _ = self.builder.exec(
-                &[_][]const u8{ "wayland-scanner", "private-code", protocol_path, code_path },
-            );
+            const code_path = self.getCodePath(protocol_path, &digest);
+            if (!cache_hit) {
+                _ = self.builder.exec(
+                    &[_][]const u8{ "wayland-scanner", "private-code", protocol_path, code_path },
+                );
+            }
             for (self.artifacts.items) |artifact| {
                 artifact.addCSourceFile(code_path, &[_][]const u8{"-std=c99"});
             }
+        }
+        if (!cache_hit) {
+            try man.writeManifest();
         }
 
         self.result.path = try fs.path.join(ally, &[_][]const u8{ out_path, "wayland.zig" });
     }
 
-    fn getCodePath(self: *ScanProtocolsStep, xml_in_path: []const u8) []const u8 {
+    fn getCodePath(self: *ScanProtocolsStep, xml_in_path: []const u8, digest: []const u8) []const u8 {
         const ally = self.builder.allocator;
         // Extension is .xml, so slice off the last 4 characters
         const basename = fs.path.basename(xml_in_path);
@@ -184,6 +200,7 @@ pub const ScanProtocolsStep = struct {
         return fs.path.join(ally, &[_][]const u8{
             self.builder.cache_root.path.?,
             "zig-wayland",
+            digest,
             code_filename,
         }) catch oom();
     }
