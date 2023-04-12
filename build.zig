@@ -29,8 +29,7 @@ pub fn build(b: *zbs.Builder) void {
         scanner.addCSource(exe);
         exe.linkLibC();
         exe.linkSystemLibrary("wayland-client");
-
-        exe.install();
+        b.installArtifact(exe);
     }
 
     const test_step = b.step("test", "Run the tests");
@@ -45,8 +44,9 @@ pub fn build(b: *zbs.Builder) void {
         scanner_tests.addAnonymousModule("wayland", .{
             .source_file = .{ .generated = &scanner.result}
         });
+        const run_test = b.addRunArtifact(scanner_tests);
 
-        test_step.dependOn(&scanner_tests.step);
+        test_step.dependOn(&run_test.step);
     }
     {
         const ref_all = b.addTest(.{
@@ -65,7 +65,9 @@ pub fn build(b: *zbs.Builder) void {
         ref_all.linkSystemLibrary("wayland-server");
         ref_all.linkSystemLibrary("wayland-egl");
         ref_all.linkSystemLibrary("wayland-cursor");
-        test_step.dependOn(&ref_all.step);
+        const run_test = b.addRunArtifact(ref_all);
+
+        test_step.dependOn(&run_test.step);
     }
 }
 
