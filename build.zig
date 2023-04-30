@@ -145,6 +145,7 @@ pub const ScanProtocolsStep = struct {
         ), &std.ascii.whitespace);
         var man = step.owner.cache.obtain();
         defer man.deinit();
+        man.hash.addBytes("133795asf");
 
         const wayland_xml = try fs.path.join(ally, &[_][]const u8{ wayland_dir, "wayland.xml" });
         try self.protocol_paths.append(wayland_xml);

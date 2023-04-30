@@ -582,6 +582,16 @@ const Interface = struct {
                 .type = titleCaseTrim(interface.name),
             });
 
+            try writer.print(
+                \\pub fn getVersion(_{[interface]}: *{[type]}) u32 {{
+                \\    const _proxy = @ptrCast(*client.wl.Proxy, _{[interface]});
+                \\    return _proxy.getVersion();
+                \\}}
+            , .{
+                .interface = fmtId(trimPrefix(interface.name)),
+                .type = titleCaseTrim(interface.name),
+            });
+
             const has_event = for (interface.events) |event| {
                 if (event.since <= target_version) break true;
             } else false;
