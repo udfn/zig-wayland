@@ -53,7 +53,7 @@ pub const Fixed = enum(i32) {
     }
 
     pub fn toDouble(f: Fixed) f64 {
-        return @floatFromInt(@as(i32, @intFromEnum(f)) / 256);
+        return @floatFromInt(@divTrunc(@as(i32, @intFromEnum(f)), 256));
     }
 
     pub fn fromDouble(d: f64) Fixed {

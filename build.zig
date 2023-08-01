@@ -182,7 +182,7 @@ pub const ScanProtocolsStep = struct {
                 );
             }
             for (self.artifacts.items) |artifact| {
-                artifact.addCSourceFile(code_path, &[_][]const u8{"-std=c99"});
+                artifact.addCSourceFile(.{.file = .{.path = code_path}, .flags = &.{"-std=c99"}});
             }
         }
         if (!cache_hit) {
