@@ -137,10 +137,10 @@ pub const ScanProtocolsStep = struct {
         const self = @fieldParentPtr(ScanProtocolsStep, "step", step);
         const ally = step.owner.allocator;
 
-        const wayland_dir = mem.trim(u8, step.owner.exec(
+        const wayland_dir = mem.trim(u8, step.owner.run(
             &[_][]const u8{ "pkg-config", "--variable=pkgdatadir", "wayland-scanner" },
         ), &std.ascii.whitespace);
-        const wayland_protocols_dir = mem.trim(u8, step.owner.exec(
+        const wayland_protocols_dir = mem.trim(u8, step.owner.run(
             &[_][]const u8{ "pkg-config", "--variable=pkgdatadir", "wayland-protocols" },
         ), &std.ascii.whitespace);
         var man = step.owner.cache.obtain();
@@ -177,7 +177,7 @@ pub const ScanProtocolsStep = struct {
         for (self.protocol_paths.items) |protocol_path| {
             const code_path = self.getCodePath(protocol_path, &digest);
             if (!cache_hit) {
-                _ = step.owner.exec(
+                _ = step.owner.run(
                     &[_][]const u8{ "wayland-scanner", "private-code", protocol_path, code_path },
                 );
             }
