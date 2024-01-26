@@ -1,9 +1,9 @@
 const std = @import("std");
-const zbs = std.build;
+const zbs = std.Build;
 const fs = std.fs;
 const mem = std.mem;
 
-pub fn build(b: *zbs.Builder) void {
+pub fn build(b: *zbs) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
@@ -13,6 +13,13 @@ pub fn build(b: *zbs.Builder) void {
     scanner.generate("wl_shm", 1);
     scanner.generate("wl_seat", 2);
     scanner.generate("wl_output", 1);
+    // HACKHACK! For some reason building this requires this hack.
+    // But.. why?
+    const incdir = mem.trim(u8, b.run(
+        &[_][]const u8{ "pkg-config", "--cflags-only-I", "wayland-client" }),
+        &std.ascii.whitespace);
+    scanner.module.addIncludePath(.{ .cwd_relative = incdir[2..]});
+
 
     inline for ([_][]const u8{ "globals", "list", "listener", "seats" }) |example| {
         const exe = b.addExecutable(.{
@@ -21,13 +28,7 @@ pub fn build(b: *zbs.Builder) void {
             .target = target,
             .optimize = optimize
         });
-
-        exe.step.dependOn(&scanner.step);
-        exe.addAnonymousModule("wayland", .{
-            .source_file = .{ .generated = &scanner.result}
-        });
-        scanner.addCSource(exe);
-        exe.linkLibC();
+        exe.root_module.addImport("wayland", scanner.module);
         exe.linkSystemLibrary("wayland-client");
         b.installArtifact(exe);
     }
@@ -40,10 +41,8 @@ pub fn build(b: *zbs.Builder) void {
             .optimize = optimize
         });
 
-        scanner_tests.step.dependOn(&scanner.step);
-        scanner_tests.addAnonymousModule("wayland", .{
-            .source_file = .{ .generated = &scanner.result}
-        });
+        scanner_tests.root_module.addImport("wayland", scanner.module);
+
         const run_test = b.addRunArtifact(scanner_tests);
 
         test_step.dependOn(&run_test.step);
@@ -55,13 +54,8 @@ pub fn build(b: *zbs.Builder) void {
             .optimize = optimize
         });
 
-        ref_all.step.dependOn(&scanner.step);
-        ref_all.addAnonymousModule("wayland", .{
-            .source_file = .{ .generated = &scanner.result}
-        });
-        scanner.addCSource(ref_all);
+        ref_all.root_module.addImport("wayland", scanner.module);
         ref_all.linkLibC();
-        ref_all.linkSystemLibrary("wayland-client");
         ref_all.linkSystemLibrary("wayland-server");
         ref_all.linkSystemLibrary("wayland-egl");
         ref_all.linkSystemLibrary("wayland-cursor");
@@ -82,12 +76,11 @@ pub const ScanProtocolsStep = struct {
     /// Paths relative to the system wayland-protocol directory
     system_protocols: std.ArrayList([]const u8),
     targets: std.ArrayList(scanner.Target),
+    wayland_dir:[]const u8,
+    wayland_protocols_dir:[]const u8,
 
-    /// Artifacts requiring the C interface definitions to be linked in.
-    /// TODO remove this after Zig issue #131 is implemented.
-    artifacts: std.ArrayList(*zbs.LibExeObjStep),
-
-    pub fn create(builder: *zbs.Builder) *ScanProtocolsStep {
+    module: *std.Build.Module,
+    pub fn create(builder: *zbs) *ScanProtocolsStep {
         const ally = builder.allocator;
         const self = ally.create(ScanProtocolsStep) catch oom();
         self.* = .{
@@ -97,11 +90,20 @@ pub const ScanProtocolsStep = struct {
                 .owner = builder,
                 .makeFn = make
             }),
+            .module = builder.createModule(.{
+                .link_libc = true,
+                .root_source_file = .{ .generated = &self.result},
+            }),
             .result = .{ .step = &self.step, .path = null },
             .protocol_paths = std.ArrayList([]const u8).init(ally),
             .system_protocols = std.ArrayList([]const u8).init(ally),
             .targets = std.ArrayList(scanner.Target).init(ally),
-            .artifacts = std.ArrayList(*zbs.LibExeObjStep).init(ally),
+            .wayland_dir = mem.trim(u8, builder.run(
+                &[_][]const u8{ "pkg-config", "--variable=pkgdatadir", "wayland-scanner" }),
+                &std.ascii.whitespace),
+            .wayland_protocols_dir = mem.trim(u8, builder.run(
+                &[_][]const u8{ "pkg-config", "--variable=pkgdatadir", "wayland-protocols" }),
+                &std.ascii.whitespace),
         };
         return self;
     }
@@ -126,32 +128,20 @@ pub const ScanProtocolsStep = struct {
         self.targets.append(.{ .name = global_interface, .version = version }) catch oom();
     }
 
-    /// Add the necessary C source to the compilation unit.
-    /// Once https://github.com/ziglang/zig/issues/131 we can remove this.
-    pub fn addCSource(self: *ScanProtocolsStep, obj: *zbs.LibExeObjStep) void {
-        self.artifacts.append(obj) catch oom();
-    }
-
     fn make(step: *zbs.Step, progress:*std.Progress.Node) !void {
         _ = progress;
         const self = @fieldParentPtr(ScanProtocolsStep, "step", step);
         const ally = step.owner.allocator;
 
-        const wayland_dir = mem.trim(u8, step.owner.run(
-            &[_][]const u8{ "pkg-config", "--variable=pkgdatadir", "wayland-scanner" },
-        ), &std.ascii.whitespace);
-        const wayland_protocols_dir = mem.trim(u8, step.owner.run(
-            &[_][]const u8{ "pkg-config", "--variable=pkgdatadir", "wayland-protocols" },
-        ), &std.ascii.whitespace);
         var man = step.owner.cache.obtain();
         defer man.deinit();
-        man.hash.addBytes("134995asdfab");
+        man.hash.addBytes("134995asdfbb");
 
-        const wayland_xml = try fs.path.join(ally, &[_][]const u8{ wayland_dir, "wayland.xml" });
+        const wayland_xml = try fs.path.join(ally, &[_][]const u8{ self.wayland_dir, "wayland.xml" });
         try self.protocol_paths.append(wayland_xml);
 
         for (self.system_protocols.items) |relative_path| {
-            const absolute_path = try fs.path.join(ally, &[_][]const u8{ wayland_protocols_dir, relative_path });
+            const absolute_path = try fs.path.join(ally, &[_][]const u8{ self.wayland_protocols_dir, relative_path });
             try self.protocol_paths.append(absolute_path);
         }
         for (self.protocol_paths.items) |protocol_path| {
@@ -181,9 +171,7 @@ pub const ScanProtocolsStep = struct {
                     &[_][]const u8{ "wayland-scanner", "private-code", protocol_path, code_path },
                 );
             }
-            for (self.artifacts.items) |artifact| {
-                artifact.addCSourceFile(.{.file = .{.path = code_path}, .flags = &.{"-std=c99"}});
-            }
+            self.module.addCSourceFile(.{.file = .{.path = code_path}, .flags = &.{"-std=c99"}});
         }
         if (!cache_hit) {
             try man.writeManifest();
