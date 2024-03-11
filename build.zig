@@ -133,7 +133,7 @@ pub const ScanProtocolsStep = struct {
         const self = @fieldParentPtr(ScanProtocolsStep, "step", step);
         const ally = step.owner.allocator;
 
-        var man = step.owner.cache.obtain();
+        var man = step.owner.graph.cache.obtain();
         defer man.deinit();
         man.hash.addBytes("134995asdfbb");
 
