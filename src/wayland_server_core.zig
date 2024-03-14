@@ -94,7 +94,7 @@ pub const Server = opaque {
         wl_display_set_global_filter(
             server,
             struct {
-                fn wrapper(_client: *const Client, _global: *const Global, _data: ?*anyopaque) callconv(.C) bool {
+                fn _wrapper(_client: *const Client, _global: *const Global, _data: ?*anyopaque) callconv(.C) bool {
                     filter(_client, _global, @alignCast(@ptrCast(_data)));
                 }
             }._wrapper,
