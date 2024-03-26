@@ -422,12 +422,12 @@ const Protocol = struct {
         switch (side) {
             .client => try writer.writeAll(
                 \\const std = @import("std");
-                \\const os = std.os;
+                \\const posix = std.posix;
                 \\const client = @import("wayland.zig").client;
                 \\const common = @import("common.zig");
             ),
             .server => try writer.writeAll(
-                \\const os = @import("std").os;
+                \\const posix = @import("std").posix;
                 \\const server = @import("wayland.zig").server;
                 \\const common = @import("common.zig");
             ),
