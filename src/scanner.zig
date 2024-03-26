@@ -2,7 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const fs = std.fs;
 const mem = std.mem;
-const os = std.os;
+const posix = std.posix;
 const fmtId = std.zig.fmtId;
 
 const log = std.log.scoped(.@"zig-wayland");
@@ -49,7 +49,7 @@ pub fn scan(
         log.err("requested global interface '{s}' not found in provided protocol xml", .{
             scanner.remaining_targets.items[0].name,
         });
-        os.exit(1);
+        posix.exit(1);
     }
 
     {
@@ -158,7 +158,7 @@ const Scanner = struct {
         const xml_bytes = try xml_file.readToEndAlloc(arena.allocator(), 512 * 4096);
         const protocol = Protocol.parseXML(arena.allocator(), xml_bytes) catch |err| {
             log.err("failed to parse {s}: {s}", .{ xml_path, @errorName(err) });
-            os.exit(1);
+            posix.exit(1);
         };
 
         var buffered_writer: std.io.BufferedWriter(4096, std.fs.File.Writer) = .{
@@ -447,7 +447,7 @@ const Protocol = struct {
                             target.version,
                             global.interface.version,
                         });
-                        os.exit(1);
+                        posix.exit(1);
                     }
                     try global.interface.emit(side, target.version, protocol.namespace, writer);
                     for (global.children) |child| {
