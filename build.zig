@@ -135,7 +135,7 @@ pub const ScanProtocolsStep = struct {
 
         var man = step.owner.graph.cache.obtain();
         defer man.deinit();
-        man.hash.addBytes("134995asdfbbc");
+        man.hash.addBytes("134997zw");
 
         const wayland_xml = try fs.path.join(ally, &[_][]const u8{ self.wayland_dir, "wayland.xml" });
         try self.protocol_paths.append(wayland_xml);

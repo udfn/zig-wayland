@@ -716,7 +716,7 @@ const Interface = struct {
                     \\        @as(?*anyopaque, @ptrFromInt(@intFromPtr(_data))),
                     \\        if (handle_destroy) |_handler| struct {{
                     \\            fn _wrapper(__resource: *server.wl.Resource) callconv(.C) void {{
-                    \\                @call(.{{ .modifier = .always_inline }}, _handler, .{{
+                    \\                @call(.always_inline, _handler, .{{
                     \\                    @as(*{[type]}, @ptrCast(__resource)),
                     \\                    @as(T, @ptrFromInt(@intFromPtr(__resource.getUserData()))),
                     \\                }});
@@ -743,7 +743,7 @@ const Interface = struct {
                     \\        @as(?*anyopaque, @ptrFromInt(@intFromPtr(_data))),
                     \\        if (handle_destroy) |_handler| struct {{
                     \\            fn _wrapper(__resource: *server.wl.Resource) callconv(.C) void {{
-                    \\                @call(.{{ .modifier = .always_inline }}, _handler, .{{
+                    \\                @call(.always_inline, _handler, .{{
                     \\                    @as(*{[type]}, @ptrCast(__resource)),
                     \\                    @as(T, @ptrFromInt(@intFromPtr(__resource.getUserData()))),
                     \\                }});
