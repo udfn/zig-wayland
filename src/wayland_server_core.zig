@@ -482,7 +482,7 @@ pub const list = struct {
                             .reverse => it.current.prev.?,
                         };
                         if (it.current == it.head) return null;
-                        return if (link_field) |f| @fieldParentPtr(T, @tagName(f), it.current) else T.fromLink(it.current);
+                        return if (link_field) |f| @fieldParentPtr(@tagName(f), it.current) else T.fromLink(it.current);
                     }
                 };
             }
@@ -507,7 +507,7 @@ pub const list = struct {
                             .reverse => it.future.prev.?,
                         };
                         if (it.current == it.head) return null;
-                        return if (link_field) |f| @fieldParentPtr(T, @tagName(f), it.current) else T.fromLink(it.current);
+                        return if (link_field) |f| @fieldParentPtr(@tagName(f), it.current) else T.fromLink(it.current);
                     }
                 };
             }
@@ -609,7 +609,7 @@ pub fn Signal(comptime T: type) type {
 
             while (cursor.link.next != &end.link) {
                 const pos = cursor.link.next.?;
-                const listener = @fieldParentPtr(Listener(T), "link", pos);
+                const listener:*Listener(T) = @fieldParentPtr("link", pos);
 
                 cursor.link.remove();
                 pos.insert(&cursor.link);

@@ -9,9 +9,6 @@ const log = std.log.scoped(.@"zig-wayland");
 
 const xml = @import("xml.zig");
 
-const gpa = general_purpose_allocator.allocator();
-var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
-
 pub const Target = struct {
     /// Name of the target global interface
     name: []const u8,
@@ -24,12 +21,12 @@ pub const Target = struct {
 };
 
 pub fn scan(
+    gpa:mem.Allocator,
     root_dir: fs.Dir,
     out_dir: fs.Dir,
     protocols: []const []const u8,
     targets: []const Target,
 ) !void {
-    defer assert(general_purpose_allocator.deinit() == .ok);
 
     const wayland_file = try out_dir.createFile("wayland.zig", .{});
     try wayland_file.writeAll(
@@ -38,7 +35,7 @@ pub fn scan(
     );
     defer wayland_file.close();
 
-    var scanner = try Scanner.init(targets);
+    var scanner = try Scanner.init(gpa, targets);
     defer scanner.deinit();
 
     for (protocols) |xml_path| {
@@ -49,7 +46,7 @@ pub fn scan(
         log.err("requested global interface '{s}' not found in provided protocol xml", .{
             scanner.remaining_targets.items[0].name,
         });
-        posix.exit(1);
+        return;
     }
 
     {
@@ -116,14 +113,17 @@ const Side = enum {
 const Scanner = struct {
     /// Map from namespace to list of generated files
     const Map = std.StringArrayHashMap(std.ArrayListUnmanaged([]const u8));
-    client: Map = Map.init(gpa),
-    server: Map = Map.init(gpa),
-    common: Map = Map.init(gpa),
+    client: Map,
+    server: Map,
+    common: Map,
 
     remaining_targets: std.ArrayListUnmanaged(Target),
 
-    fn init(targets: []const Target) !Scanner {
+    fn init(gpa:mem.Allocator, targets: []const Target) !Scanner {
         return Scanner{
+            .client = Map.init(gpa),
+            .server = Map.init(gpa),
+            .common = Map.init(gpa),
             .remaining_targets = .{
                 .items = try gpa.dupe(Target, targets),
                 .capacity = targets.len,
@@ -132,18 +132,18 @@ const Scanner = struct {
     }
 
     fn deinit(scanner: *Scanner) void {
+        scanner.remaining_targets.deinit(scanner.client.allocator);
         deinit_map(&scanner.client);
         deinit_map(&scanner.server);
         deinit_map(&scanner.common);
 
-        scanner.remaining_targets.deinit(gpa);
     }
 
     fn deinit_map(map: *Map) void {
-        for (map.keys()) |namespace| gpa.free(namespace);
+        for (map.keys()) |namespace| map.allocator.free(namespace);
         for (map.values()) |*list| {
-            for (list.items) |file_name| gpa.free(file_name);
-            list.deinit(gpa);
+            for (list.items) |file_name| map.allocator.free(file_name);
+            list.deinit(map.allocator);
         }
         map.deinit();
     }
@@ -152,20 +152,20 @@ const Scanner = struct {
         const xml_file = try root_dir.openFile(xml_path, .{});
         defer xml_file.close();
 
-        var arena = std.heap.ArenaAllocator.init(gpa);
+        var arena = std.heap.ArenaAllocator.init(scanner.client.allocator);
         defer arena.deinit();
 
         const xml_bytes = try xml_file.readToEndAlloc(arena.allocator(), 512 * 4096);
-        const protocol = Protocol.parseXML(arena.allocator(), xml_bytes) catch |err| {
+        const protocol = Protocol.parseXML(scanner.client.allocator, arena.allocator(), xml_bytes) catch |err| {
             log.err("failed to parse {s}: {s}", .{ xml_path, @errorName(err) });
-            posix.exit(1);
+            return error.ParseFail;
         };
 
         var buffered_writer: std.io.BufferedWriter(4096, std.fs.File.Writer) = .{
             .unbuffered_writer = undefined,
         };
         {
-            const client_filename = try mem.concat(gpa, u8, &[_][]const u8{ protocol.name, "_client.zig" });
+            const client_filename = try mem.concat(scanner.client.allocator, u8, &[_][]const u8{ protocol.name, "_client.zig" });
             const client_file = try out_dir.createFile(client_filename, .{});
             defer client_file.close();
 
@@ -174,14 +174,14 @@ const Scanner = struct {
             try protocol.emit(.client, scanner.remaining_targets.items, buffered_writer.writer());
 
             const gop = try scanner.client.getOrPutValue(protocol.namespace, .{});
-            if (!gop.found_existing) gop.key_ptr.* = try gpa.dupe(u8, protocol.namespace);
-            try gop.value_ptr.append(gpa, client_filename);
+            if (!gop.found_existing) gop.key_ptr.* = try scanner.client.allocator.dupe(u8, protocol.namespace);
+            try gop.value_ptr.append(scanner.client.allocator, client_filename);
 
             try buffered_writer.flush();
         }
 
         {
-            const server_filename = try mem.concat(gpa, u8, &[_][]const u8{ protocol.name, "_server.zig" });
+            const server_filename = try mem.concat(scanner.client.allocator, u8, &[_][]const u8{ protocol.name, "_server.zig" });
             const server_file = try out_dir.createFile(server_filename, .{});
             defer server_file.close();
 
@@ -190,14 +190,14 @@ const Scanner = struct {
             try protocol.emit(.server, scanner.remaining_targets.items, buffered_writer.writer());
 
             const gop = try scanner.server.getOrPutValue(protocol.namespace, .{});
-            if (!gop.found_existing) gop.key_ptr.* = try gpa.dupe(u8, protocol.namespace);
-            try gop.value_ptr.append(gpa, server_filename);
+            if (!gop.found_existing) gop.key_ptr.* = try scanner.client.allocator.dupe(u8, protocol.namespace);
+            try gop.value_ptr.append(scanner.client.allocator, server_filename);
 
             try buffered_writer.flush();
         }
 
         {
-            const common_filename = try mem.concat(gpa, u8, &[_][]const u8{ protocol.name, "_common.zig" });
+            const common_filename = try mem.concat(scanner.client.allocator, u8, &[_][]const u8{ protocol.name, "_common.zig" });
             const common_file = try out_dir.createFile(common_filename, .{});
             defer common_file.close();
 
@@ -206,8 +206,8 @@ const Scanner = struct {
             try protocol.emitCommon(scanner.remaining_targets.items, buffered_writer.writer());
 
             const gop = try scanner.common.getOrPutValue(protocol.namespace, .{});
-            if (!gop.found_existing) gop.key_ptr.* = try gpa.dupe(u8, protocol.namespace);
-            try gop.value_ptr.append(gpa, common_filename);
+            if (!gop.found_existing) gop.key_ptr.* = try scanner.client.allocator.dupe(u8, protocol.namespace);
+            try gop.value_ptr.append(scanner.client.allocator, common_filename);
 
             try buffered_writer.flush();
         }
@@ -245,16 +245,16 @@ const Protocol = struct {
     version_locked_interfaces: []const Interface,
     globals: []const Global,
 
-    fn parseXML(arena: mem.Allocator, xml_bytes: []const u8) !Protocol {
+    fn parseXML(gpa:mem.Allocator, arena: mem.Allocator, xml_bytes: []const u8) !Protocol {
         var parser = xml.Parser.init(xml_bytes);
         while (parser.next()) |ev| switch (ev) {
-            .open_tag => |tag| if (mem.eql(u8, tag, "protocol")) return parse(arena, &parser),
+            .open_tag => |tag| if (mem.eql(u8, tag, "protocol")) return parse(gpa, arena, &parser),
             else => {},
         };
         return error.UnexpectedEndOfFile;
     }
 
-    fn parse(arena: mem.Allocator, parser: *xml.Parser) !Protocol {
+    fn parse(gpa:mem.Allocator, arena: mem.Allocator, parser: *xml.Parser) !Protocol {
         var name: ?[]const u8 = null;
         var copyright: ?[]const u8 = null;
         var toplevel_description: ?[]const u8 = null;
@@ -289,7 +289,7 @@ const Protocol = struct {
                         return error.UnexpectedEndOfFile;
                     }
                 } else if (mem.eql(u8, tag, "interface")) {
-                    const interface = try Interface.parse(arena, parser);
+                    const interface = try Interface.parse(gpa, arena, parser);
                     if (Interface.version_locked(interface.name)) {
                         try version_locked_interfaces.append(interface);
                     } else {
@@ -306,7 +306,7 @@ const Protocol = struct {
             .close_tag => |tag| if (mem.eql(u8, tag, "protocol")) {
                 if (interfaces.count() == 0) return error.NoInterfaces;
 
-                const globals = try find_globals(arena, interfaces);
+                const globals = try find_globals(gpa, arena, interfaces);
                 if (globals.len == 0) return error.NoGlobals;
 
                 const namespace = prefix(interfaces.values()[0].name) orelse return error.NoNamespace;
@@ -331,7 +331,7 @@ const Protocol = struct {
         return error.UnexpectedEndOfFile;
     }
 
-    fn find_globals(arena: mem.Allocator, interfaces: std.StringArrayHashMap(Interface)) ![]const Global {
+    fn find_globals(gpa:mem.Allocator, arena: mem.Allocator, interfaces: std.StringArrayHashMap(Interface)) ![]const Global {
         var non_globals = std.StringHashMap(void).init(gpa);
         defer non_globals.deinit();
 
@@ -385,10 +385,10 @@ const Protocol = struct {
                         if (Interface.version_locked(child_name)) continue;
 
                         const child = interfaces.get(child_name) orelse {
-                            log.err("interface '{s}' constructed by message '{s}' not defined in the protocol and not wl_callback or wl_buffer", .{
-                                child_name,
-                                message.name,
-                            });
+                            //log.err("interface '{s}' constructed by message '{s}' not defined in the protocol and not wl_callback or wl_buffer", .{
+                            //    child_name,
+                            //    message.name,
+                            //});
                             return error.InvalidInterface;
                         };
                         try children.put(child_name, child);
@@ -447,7 +447,7 @@ const Protocol = struct {
                             target.version,
                             global.interface.version,
                         });
-                        posix.exit(1);
+                        return error.InvalidProtocolVersion;
                     }
                     try global.interface.emit(side, target.version, protocol.namespace, writer);
                     for (global.children) |child| {
@@ -506,7 +506,7 @@ const Interface = struct {
         return version_locked_interfaces.has(interface_name);
     }
 
-    fn parse(arena: mem.Allocator, parser: *xml.Parser) !Interface {
+    fn parse(gpa:mem.Allocator, arena: mem.Allocator, parser: *xml.Parser) !Interface {
         var name: ?[]const u8 = null;
         var version: ?u32 = null;
         var requests = std.ArrayList(Message).init(gpa);
@@ -520,11 +520,11 @@ const Interface = struct {
             .open_tag => |tag| {
                 // TODO: parse description
                 if (mem.eql(u8, tag, "request"))
-                    try requests.append(try Message.parse(arena, parser))
+                    try requests.append(try Message.parse(gpa, arena, parser))
                 else if (mem.eql(u8, tag, "event"))
-                    try events.append(try Message.parse(arena, parser))
+                    try events.append(try Message.parse(gpa, arena, parser))
                 else if (mem.eql(u8, tag, "enum"))
-                    try enums.append(try Enum.parse(arena, parser));
+                    try enums.append(try Enum.parse(gpa, arena, parser));
             },
             .attribute => |attr| {
                 if (mem.eql(u8, attr.name, "name")) {
@@ -801,7 +801,7 @@ const Message = struct {
         destructor: void,
     },
 
-    fn parse(arena: mem.Allocator, parser: *xml.Parser) !Message {
+    fn parse(gpa:mem.Allocator, arena: mem.Allocator, parser: *xml.Parser) !Message {
         var name: ?[]const u8 = null;
         var since: ?u32 = null;
         var args = std.ArrayList(Arg).init(gpa);
@@ -848,7 +848,7 @@ const Message = struct {
     }
 
     fn emitField(message: Message, side: Side, writer: anytype) !void {
-        try writer.print("{s}", .{fmtId(message.name)});
+        try writer.print("{}", .{fmtId(message.name)});
         if (message.args.len == 0) {
             try writer.writeAll(": void,");
             return;
@@ -1130,7 +1130,7 @@ const Enum = struct {
     entries: []const Entry,
     bitfield: bool,
 
-    fn parse(arena: mem.Allocator, parser: *xml.Parser) !Enum {
+    fn parse(gpa:mem.Allocator, arena: mem.Allocator, parser: *xml.Parser) !Enum {
         var name: ?[]const u8 = null;
         var since: ?u32 = null;
         var entries = std.ArrayList(Entry).init(gpa);
@@ -1196,7 +1196,7 @@ const Enum = struct {
         try writer.writeAll(" = enum(c_int) {");
         for (e.entries) |entry| {
             if (entry.since <= target_version) {
-                try writer.print("{s}= {s},", .{ fmtId(entry.name), entry.value });
+                try writer.print("{}= {s},", .{ fmtId(entry.name), entry.value });
             }
         }
         // Always generate non-exhaustive enums to ensure forward compatability.
@@ -1312,12 +1312,80 @@ fn printAbsolute(side: Side, writer: anytype, interface: []const u8) !void {
     });
 }
 
+const ScannerCli = struct {
+    out_dir:std.fs.Dir,
+    protocols:[]const []const u8,
+    targets:[]const Target,
+
+    fn init(allocator:mem.Allocator) !ScannerCli {
+        var argit = try std.process.argsWithAllocator(allocator);
+        defer argit.deinit();
+        _ = argit.skip();
+        var protocols = std.ArrayListUnmanaged([]const u8){};
+        var targets = std.ArrayListUnmanaged(Target){};
+        var maybe_out_dir:?[]const u8 = null;
+        while (argit.next()) |arg| {
+            if (mem.startsWith(u8, arg, "-T")) {
+                const target = arg[2..];
+                const colonpos = mem.indexOfScalar(u8, target, ':') orelse {
+                    std.log.err("invalid target '{s}'", .{target});
+                    continue;
+                };
+                const version = std.fmt.parseUnsigned(u32, target[colonpos+1..], 10) catch {
+                    std.log.err("invalid version for {s}: '{s}'", .{target[0..colonpos], target[colonpos+1..]});
+                    continue;
+                };
+                const name = try allocator.dupe(u8, target[0..colonpos]);
+                try targets.append(allocator, .{
+                    .name = name,
+                    .version = version
+                });
+            } else if (mem.startsWith(u8, arg, "-O")) {
+                maybe_out_dir = std.fs.path.dirname(arg[2..]);
+
+            } else if (mem.startsWith(u8, arg, "-P")) {
+                try protocols.append(allocator, arg[2..]);
+            }
+
+        }
+        const out_dir = maybe_out_dir orelse {
+            std.log.err("no output dir specified", .{});
+            return error.NoOutputDir;
+        };
+        return .{
+            .protocols = try protocols.toOwnedSlice(allocator),
+            .targets = try targets.toOwnedSlice(allocator),
+            .out_dir = try std.fs.cwd().makeOpenPath(out_dir, .{}),
+        };
+    }
+    pub fn deinit(self:*ScannerCli, allocator:mem.Allocator) void {
+        for (self.protocols) |protocol| {
+            allocator.free(protocol);
+        }
+        allocator.free(self.protocols);
+        for (self.targets) |target| {
+            allocator.free(target.name);
+        }
+        allocator.free(self.targets);
+        self.out_dir.close();
+    }
+};
+
+pub fn main() !void {
+    var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{.safety = false}){};
+    const gpa = general_purpose_allocator.allocator();
+
+    var cli = try ScannerCli.init(gpa);
+    defer cli.deinit(gpa);
+    try scan(gpa, std.fs.cwd(), cli.out_dir, cli.protocols, cli.targets);
+}
+
 test "parsing" {
     const testing = std.testing;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    const protocol = try Protocol.parseXML(arena.allocator(), @embedFile("test_data/wayland.xml"));
+    const protocol = try Protocol.parseXML(testing.allocator, arena.allocator(), @embedFile("test_data/wayland.xml"));
 
     try testing.expectEqualSlices(u8, "wayland", protocol.name);
     try testing.expectEqual(@as(usize, 7), protocol.globals.len);
