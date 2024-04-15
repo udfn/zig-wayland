@@ -63,10 +63,7 @@ pub fn build(b: *zbs) void {
 }
 
 pub const ScanProtocolsStep = struct {
-    const Target = struct {
-        name: []const u8,
-        version: u32,
-    };
+    step:zbs.Step,
 
     /// Absolute paths to protocol xml
     protocol_paths: std.ArrayListUnmanaged(zbs.LazyPath),
@@ -87,6 +84,12 @@ pub const ScanProtocolsStep = struct {
         });
         const run_scanner = builder.addRunArtifact(scanner_exe);
         self.* = .{
+            .step = zbs.Step.init(.{
+                .id = .custom,
+                .name = "Scan Protocols",
+                .owner = builder,
+                .makeFn = make,
+            }),
             .module = builder.createModule(.{
                 .root_source_file = run_scanner.addPrefixedOutputFileArg("-O", "wayland.zig"),
                 .link_libc = true,
@@ -96,6 +99,7 @@ pub const ScanProtocolsStep = struct {
             .wayland_dir = mem.trim(u8, builder.run(&[_][]const u8{ "pkg-config", "--variable=pkgdatadir", "wayland-scanner" }), &std.ascii.whitespace),
             .wayland_protocols_dir = mem.trim(u8, builder.run(&[_][]const u8{ "pkg-config", "--variable=pkgdatadir", "wayland-protocols" }), &std.ascii.whitespace),
         };
+        run_scanner.step.dependOn(&self.step);
         run_scanner.addPrefixedFileArg("-P", .{ .cwd_relative = fs.path.join(ally, &[_][]const u8{ self.wayland_dir, "wayland.xml" }) catch @panic("OOM") });
         return self;
     }
@@ -122,6 +126,46 @@ pub const ScanProtocolsStep = struct {
     pub fn generate(self: *ScanProtocolsStep, global_interface: []const u8, version: u32) void {
         self.run_scanner.addArg(std.fmt.allocPrint(self.run_scanner.step.owner.allocator, "-T{s}:{}", .{ global_interface, version }) catch @panic("OOM"));
     }
+
+    fn make(step:*zbs.Step, progress:*std.Progress.Node) !void {
+        // Once https://github.com/ziglang/zig/issues/131 is implemented
+        // we can stop generating/linking C code.
+        _ = progress;
+        const self:*ScanProtocolsStep = @fieldParentPtr("step", step);
+        step.result_cached = true;
+        for (self.protocol_paths.items) |protocol_path| {
+            var cache = step.owner.graph.cache.obtain();
+            defer cache.deinit();
+            const proto_path = protocol_path.getPath(step.owner);
+            cache.hash.addBytes("1");
+            _ = try cache.addFile(proto_path, null);
+            const hit = try cache.hit();
+            const digest = cache.final();
+            const code_path = self.getCodePath(proto_path, &digest);
+            if (!hit) {
+                step.result_cached = false;
+                try std.fs.cwd().makePath(std.fs.path.dirname(code_path) orelse return error.BadPath);
+                _ = step.owner.run(
+                    &[_][]const u8{ "wayland-scanner", "private-code", proto_path, code_path },
+                );
+                try cache.writeManifest();
+            }
+            self.module.addCSourceFile(.{.file = .{.path = code_path}, .flags = &.{"-std=c99"}});
+        }
+    }
+    fn getCodePath(self: *ScanProtocolsStep, xml_in_path: []const u8, digest: []const u8) []const u8 {
+        const ally = self.step.owner.allocator;
+        // Extension is .xml, so slice off the last 4 characters
+        const basename = fs.path.basename(xml_in_path);
+        const basename_no_ext = basename[0..(basename.len - 4)];
+        const code_filename = std.fmt.allocPrint(ally, "{s}.c", .{basename_no_ext}) catch oom();
+        return fs.path.join(ally, &[_][]const u8{
+            self.step.owner.cache_root.path.?,
+            "zig-wayland-c",
+            digest,
+            code_filename,
+        }) catch oom();
+     }
 };
 
 fn oom() noreturn {
