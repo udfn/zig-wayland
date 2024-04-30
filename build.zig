@@ -99,6 +99,9 @@ pub const ScanProtocolsStep = struct {
             .wayland_dir = mem.trim(u8, builder.run(&[_][]const u8{ "pkg-config", "--variable=pkgdatadir", "wayland-scanner" }), &std.ascii.whitespace),
             .wayland_protocols_dir = mem.trim(u8, builder.run(&[_][]const u8{ "pkg-config", "--variable=pkgdatadir", "wayland-protocols" }), &std.ascii.whitespace),
         };
+        self.module.addIncludePath(.{
+            .cwd_relative = mem.trim(u8, builder.run(&[_][]const u8{ "pkg-config", "--variable=includedir", "wayland-client" }), &std.ascii.whitespace)
+        });
         run_scanner.step.dependOn(&self.step);
         run_scanner.addPrefixedFileArg("-P", .{ .cwd_relative = fs.path.join(ally, &[_][]const u8{ self.wayland_dir, "wayland.xml" }) catch @panic("OOM") });
         return self;
