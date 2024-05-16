@@ -153,7 +153,7 @@ pub const ScanProtocolsStep = struct {
                 );
                 try cache.writeManifest();
             }
-            self.module.addCSourceFile(.{.file = step.owner.path(code_path), .flags = &.{"-std=c99"}});
+            self.module.addCSourceFile(.{.file = .{.cwd_relative = code_path}, .flags = &.{"-std=c99"}});
         }
     }
     fn getCodePath(self: *ScanProtocolsStep, xml_in_path: []const u8, digest: []const u8) []const u8 {
