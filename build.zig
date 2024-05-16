@@ -17,7 +17,7 @@ pub fn build(b: *zbs) void {
     scanner.generate("wl_output", 1);
 
     inline for ([_][]const u8{ "globals", "list", "listener", "seats" }) |example| {
-        const exe = b.addExecutable(.{ .name = example, .root_source_file = .{ .path = "example/" ++ example ++ ".zig" }, .target = target, .optimize = optimize });
+        const exe = b.addExecutable(.{ .name = example, .root_source_file = b.path("example/" ++ example ++ ".zig") , .target = target, .optimize = optimize });
         exe.root_module.addImport("wayland", scanner.module);
         exe.linkSystemLibrary("wayland-client");
         b.installArtifact(exe);
@@ -25,7 +25,7 @@ pub fn build(b: *zbs) void {
 
     const exe = b.addExecutable(.{
         .name = "zig-wl-scanner",
-        .root_source_file = .{ .path = "src/scanner.zig" },
+        .root_source_file = b.path("src/scanner.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -40,7 +40,7 @@ pub fn build(b: *zbs) void {
 
     const test_step = b.step("test", "Run the tests");
     {
-        const scanner_tests = b.addTest(.{ .root_source_file = .{ .path = "src/scanner.zig" }, .target = target, .optimize = optimize });
+        const scanner_tests = b.addTest(.{ .root_source_file = b.path("src/scanner.zig"), .target = target, .optimize = optimize });
 
         scanner_tests.root_module.addImport("wayland", scanner.module);
 
@@ -49,7 +49,7 @@ pub fn build(b: *zbs) void {
         test_step.dependOn(&run_test.step);
     }
     {
-        const ref_all = b.addTest(.{ .root_source_file = .{ .path = "src/ref_all.zig" }, .target = target, .optimize = optimize });
+        const ref_all = b.addTest(.{ .root_source_file = b.path("src/ref_all.zig"), .target = target, .optimize = optimize });
 
         ref_all.root_module.addImport("wayland", scanner.module);
         ref_all.linkLibC();
@@ -153,7 +153,7 @@ pub const ScanProtocolsStep = struct {
                 );
                 try cache.writeManifest();
             }
-            self.module.addCSourceFile(.{.file = .{.path = code_path}, .flags = &.{"-std=c99"}});
+            self.module.addCSourceFile(.{.file = step.owner.path(code_path), .flags = &.{"-std=c99"}});
         }
     }
     fn getCodePath(self: *ScanProtocolsStep, xml_in_path: []const u8, digest: []const u8) []const u8 {
