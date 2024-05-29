@@ -130,7 +130,7 @@ pub const ScanProtocolsStep = struct {
         self.run_scanner.addArg(std.fmt.allocPrint(self.run_scanner.step.owner.allocator, "-T{s}:{}", .{ global_interface, version }) catch @panic("OOM"));
     }
 
-    fn make(step:*zbs.Step, progress:*std.Progress.Node) !void {
+    fn make(step:*zbs.Step, progress:std.Progress.Node) !void {
         // Once https://github.com/ziglang/zig/issues/131 is implemented
         // we can stop generating/linking C code.
         _ = progress;
