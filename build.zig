@@ -63,10 +63,14 @@ pub fn build(b: *zbs) void {
 }
 
 pub const ScanProtocolsStep = struct {
+    const ProtocolPath = struct {
+        path:zbs.LazyPath,
+        gen_c_code:bool,
+    };
     step:zbs.Step,
 
     /// Absolute paths to protocol xml
-    protocol_paths: std.ArrayListUnmanaged(zbs.LazyPath),
+    protocol_paths: std.ArrayListUnmanaged(ProtocolPath),
     run_scanner: *std.Build.Step.Run,
 
     wayland_dir: []const u8,
@@ -108,8 +112,8 @@ pub const ScanProtocolsStep = struct {
     }
 
     /// Scan the protocol xml at the given absolute or relative path
-    pub fn addProtocolPath(self: *ScanProtocolsStep, path: zbs.LazyPath) void {
-        self.protocol_paths.append(self.run_scanner.step.owner.allocator, path) catch @panic("OOM");
+    pub fn addProtocolPath(self: *ScanProtocolsStep, path: zbs.LazyPath, gen_c_code:bool) void {
+        self.protocol_paths.append(self.run_scanner.step.owner.allocator, .{.path = path, .gen_c_code = gen_c_code}) catch @panic("OOM");
         self.run_scanner.addPrefixedFileArg("-P", path);
     }
 
@@ -117,7 +121,7 @@ pub const ScanProtocolsStep = struct {
     /// package given the relative path (e.g. "stable/xdg-shell/xdg-shell.xml")
     pub fn addSystemProtocol(self: *ScanProtocolsStep, relative_path: []const u8) void {
         const absolute_path = fs.path.join(self.run_scanner.step.owner.allocator, &[_][]const u8{ self.wayland_protocols_dir, relative_path }) catch @panic("OOM");
-        self.protocol_paths.append(self.run_scanner.step.owner.allocator, .{ .cwd_relative = absolute_path }) catch @panic("OOM");
+        self.protocol_paths.append(self.run_scanner.step.owner.allocator, .{.path = .{ .cwd_relative = absolute_path }, .gen_c_code = true}) catch @panic("OOM");
         self.run_scanner.addPrefixedFileArg("-P", .{ .cwd_relative = absolute_path });
     }
 
@@ -137,9 +141,12 @@ pub const ScanProtocolsStep = struct {
         const self:*ScanProtocolsStep = @fieldParentPtr("step", step);
         step.result_cached = true;
         for (self.protocol_paths.items) |protocol_path| {
+            if (!protocol_path.gen_c_code) {
+                continue;
+            }
             var cache = step.owner.graph.cache.obtain();
             defer cache.deinit();
-            const proto_path = protocol_path.getPath(step.owner);
+            const proto_path = protocol_path.path.getPath(step.owner);
             cache.hash.addBytes("1");
             _ = try cache.addFile(proto_path, null);
             const hit = try cache.hit();
