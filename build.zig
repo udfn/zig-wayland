@@ -119,9 +119,9 @@ pub const ScanProtocolsStep = struct {
 
     /// Scan the protocol xml provided by the wayland-protocols
     /// package given the relative path (e.g. "stable/xdg-shell/xdg-shell.xml")
-    pub fn addSystemProtocol(self: *ScanProtocolsStep, relative_path: []const u8) void {
+    pub fn addSystemProtocol(self: *ScanProtocolsStep, relative_path: []const u8, gen_c_code:bool) void {
         const absolute_path = fs.path.join(self.run_scanner.step.owner.allocator, &[_][]const u8{ self.wayland_protocols_dir, relative_path }) catch @panic("OOM");
-        self.protocol_paths.append(self.run_scanner.step.owner.allocator, .{.path = .{ .cwd_relative = absolute_path }, .gen_c_code = true}) catch @panic("OOM");
+        self.protocol_paths.append(self.run_scanner.step.owner.allocator, .{.path = .{ .cwd_relative = absolute_path }, .gen_c_code = gen_c_code}) catch @panic("OOM");
         self.run_scanner.addPrefixedFileArg("-P", .{ .cwd_relative = absolute_path });
     }
 
@@ -134,10 +134,10 @@ pub const ScanProtocolsStep = struct {
         self.run_scanner.addArg(std.fmt.allocPrint(self.run_scanner.step.owner.allocator, "-T{s}:{}", .{ global_interface, version }) catch @panic("OOM"));
     }
 
-    fn make(step:*zbs.Step, progress:std.Progress.Node) !void {
+    fn make(step:*zbs.Step, options:zbs.Step.MakeOptions) !void {
         // Once https://github.com/ziglang/zig/issues/131 is implemented
         // we can stop generating/linking C code.
-        _ = progress;
+        _ = options;
         const self:*ScanProtocolsStep = @fieldParentPtr("step", step);
         step.result_cached = true;
         for (self.protocol_paths.items) |protocol_path| {
