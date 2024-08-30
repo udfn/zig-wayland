@@ -941,8 +941,8 @@ const Message = struct {
                             const c_type = if (arg.kind == .uint) "u32" else "i32";
                             try writer.print(
                                 \\ )) {{
-                                \\    .Enum => @as({[ct]s}, @intCast(@intFromEnum(_{[an]}))),
-                                \\    .Struct => @as(u32, @bitCast(_{[an]})),
+                                \\    .@"enum" => @as({[ct]s}, @intCast(@intFromEnum(_{[an]}))),
+                                \\    .@"struct" => @as(u32, @bitCast(_{[an]})),
                                 \\    else => unreachable,
                                 \\ }}
                             , .{ .ct = c_type, .an = fmtId(arg.name) });

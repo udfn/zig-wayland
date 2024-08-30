@@ -427,7 +427,7 @@ pub const list = struct {
     /// This has the same ABI as wl.list.Link/wl_list. If link_field is null, then
     /// T.getLink()/T.fromLink() will be used. This allows for compatiability
     /// with wl.Client and wl.Resource
-    pub fn Head(comptime T: type, comptime link_field: ?@Type(.EnumLiteral)) type {
+    pub fn Head(comptime T: type, comptime link_field: ?@Type(.enum_literal)) type {
         return extern struct {
             const Self = @This();
 
