@@ -1344,7 +1344,7 @@ const ScannerCli = struct {
                 maybe_out_dir = std.fs.path.dirname(arg[2..]);
 
             } else if (mem.startsWith(u8, arg, "-P")) {
-                try protocols.append(allocator, arg[2..]);
+                try protocols.append(allocator, try allocator.dupe(u8, arg[2..]));
             }
 
         }
