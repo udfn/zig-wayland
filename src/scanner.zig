@@ -50,30 +50,28 @@ pub fn scan(
     }
 
     {
-        const client_core_file = try out_dir.createFile("wayland_client_core.zig", .{});
-        defer client_core_file.close();
-        try client_core_file.writeAll(@embedFile("wayland_client_core.zig"));
-
         const client_file = try out_dir.createFile("client.zig", .{});
         defer client_file.close();
         const writer = client_file.writer();
 
         var iter = scanner.client.iterator();
         while (iter.next()) |entry| {
-            try writer.print("pub const {s} = struct {{", .{entry.key_ptr.*});
-            if (mem.eql(u8, entry.key_ptr.*, "wl"))
-                try writer.writeAll("pub usingnamespace @import(\"wayland_client_core.zig\");\n");
-            for (entry.value_ptr.items) |generated_file|
-                try writer.print("pub usingnamespace @import(\"{s}\");", .{generated_file});
+            try writer.print("pub const {s} = struct {{\n", .{entry.key_ptr.*});
+            if (mem.eql(u8, entry.key_ptr.*, "wl")) {
+                try writer.writeAll(@embedFile("wayland_client_core.zig"));
+            }
+            for (entry.value_ptr.items) |generated_file| {
+                const constname = std.mem.sliceTo(generated_file.name, '.');
+                try writer.print("const {s} = @import(\"{s}\");\n", .{constname, generated_file.name});
+                for (generated_file.constants) |constant| {
+                    try writer.print("pub const {s} = {s}.{s};\n", .{constant, constname, constant});
+                }
+            }
             try writer.writeAll("};\n");
         }
     }
 
     {
-        const server_core_file = try out_dir.createFile("wayland_server_core.zig", .{});
-        defer server_core_file.close();
-        try server_core_file.writeAll(@embedFile("wayland_server_core.zig"));
-
         const server_file = try out_dir.createFile("server.zig", .{});
         defer server_file.close();
         const writer = server_file.writer();
@@ -82,9 +80,14 @@ pub fn scan(
         while (iter.next()) |entry| {
             try writer.print("pub const {s} = struct {{", .{entry.key_ptr.*});
             if (mem.eql(u8, entry.key_ptr.*, "wl"))
-                try writer.writeAll("pub usingnamespace @import(\"wayland_server_core.zig\");\n");
-            for (entry.value_ptr.items) |generated_file|
-                try writer.print("pub usingnamespace @import(\"{s}\");", .{generated_file});
+                try writer.writeAll(@embedFile("wayland_server_core.zig"));
+            for (entry.value_ptr.items) |generated_file| {
+                const constname = std.mem.sliceTo(generated_file.name, '.');
+                try writer.print("const {s} = @import(\"{s}\");\n", .{constname, generated_file.name});
+                for (generated_file.constants) |constant| {
+                    try writer.print("pub const {s} = {s}.{s};\n", .{constant, constname, constant});
+                }
+            }
             try writer.writeAll("};\n");
         }
     }
@@ -98,8 +101,13 @@ pub fn scan(
         var iter = scanner.common.iterator();
         while (iter.next()) |entry| {
             try writer.print("pub const {s} = struct {{", .{entry.key_ptr.*});
-            for (entry.value_ptr.items) |generated_file|
-                try writer.print("pub usingnamespace @import(\"{s}\");", .{generated_file});
+            for (entry.value_ptr.items) |generated_file| {
+                const constname = std.mem.sliceTo(generated_file.name, '.');
+                try writer.print("const {s} = @import(\"{s}\");\n", .{constname, generated_file.name});
+                for (generated_file.constants) |constant| {
+                    try writer.print("pub const {s} = {s}.{s};\n", .{constant, constname, constant});
+                }
+            }
             try writer.writeAll("};\n");
         }
     }
@@ -111,8 +119,12 @@ const Side = enum {
 };
 
 const Scanner = struct {
+    const GeneratedFile = struct {
+        name: []const u8,
+        constants: []const[]const u8,
+    };
     /// Map from namespace to list of generated files
-    const Map = std.StringArrayHashMap(std.ArrayListUnmanaged([]const u8));
+    const Map = std.StringArrayHashMap(std.ArrayListUnmanaged(GeneratedFile));
     client: Map,
     server: Map,
     common: Map,
@@ -142,7 +154,9 @@ const Scanner = struct {
     fn deinit_map(map: *Map) void {
         for (map.keys()) |namespace| map.allocator.free(namespace);
         for (map.values()) |*list| {
-            for (list.items) |file_name| map.allocator.free(file_name);
+            for (list.items) |file_name| {
+                map.allocator.free(file_name.name);
+            }
             list.deinit(map.allocator);
         }
         map.deinit();
@@ -171,11 +185,15 @@ const Scanner = struct {
 
             buffered_writer.unbuffered_writer = client_file.writer();
 
-            try protocol.emit(.client, scanner.remaining_targets.items, buffered_writer.writer());
+            var pub_constants = std.ArrayList([]const u8).init(scanner.client.allocator);
+            try protocol.emit(.client, scanner.remaining_targets.items, &pub_constants, buffered_writer.writer());
 
             const gop = try scanner.client.getOrPutValue(protocol.namespace, .{});
             if (!gop.found_existing) gop.key_ptr.* = try scanner.client.allocator.dupe(u8, protocol.namespace);
-            try gop.value_ptr.append(scanner.client.allocator, client_filename);
+            try gop.value_ptr.append(scanner.client.allocator, .{
+                .name = client_filename,
+                .constants = try pub_constants.toOwnedSlice(),
+            });
 
             try buffered_writer.flush();
         }
@@ -187,12 +205,15 @@ const Scanner = struct {
 
             buffered_writer.unbuffered_writer = server_file.writer();
 
-            try protocol.emit(.server, scanner.remaining_targets.items, buffered_writer.writer());
+            var pub_constants = std.ArrayList([]const u8).init(scanner.client.allocator);
+            try protocol.emit(.server, scanner.remaining_targets.items, &pub_constants, buffered_writer.writer());
 
             const gop = try scanner.server.getOrPutValue(protocol.namespace, .{});
             if (!gop.found_existing) gop.key_ptr.* = try scanner.client.allocator.dupe(u8, protocol.namespace);
-            try gop.value_ptr.append(scanner.client.allocator, server_filename);
-
+            try gop.value_ptr.append(scanner.client.allocator, .{
+                .name = server_filename,
+                .constants = try pub_constants.toOwnedSlice(),
+            });
             try buffered_writer.flush();
         }
 
@@ -203,12 +224,15 @@ const Scanner = struct {
 
             buffered_writer.unbuffered_writer = common_file.writer();
 
-            try protocol.emitCommon(scanner.remaining_targets.items, buffered_writer.writer());
+            var pub_constants = std.ArrayList([]const u8).init(scanner.client.allocator);
+            try protocol.emitCommon(scanner.remaining_targets.items, &pub_constants, buffered_writer.writer());
 
             const gop = try scanner.common.getOrPutValue(protocol.namespace, .{});
             if (!gop.found_existing) gop.key_ptr.* = try scanner.client.allocator.dupe(u8, protocol.namespace);
-            try gop.value_ptr.append(scanner.client.allocator, common_filename);
-
+            try gop.value_ptr.append(scanner.client.allocator, .{
+                .name = common_filename,
+                .constants = try pub_constants.toOwnedSlice(),
+            });
             try buffered_writer.flush();
         }
 
@@ -417,7 +441,7 @@ const Protocol = struct {
         }
     }
 
-    fn emit(protocol: Protocol, side: Side, targets: []const Target, writer: anytype) !void {
+    fn emit(protocol: Protocol, side: Side, targets: []const Target, pub_constants:*std.ArrayList([]const u8), writer: anytype) !void {
         try protocol.emitCopyrightAndToplevelDescription(writer);
         switch (side) {
             .client => try writer.writeAll(
@@ -435,7 +459,7 @@ const Protocol = struct {
 
         for (protocol.version_locked_interfaces) |interface| {
             assert(interface.version == 1);
-            try interface.emit(side, 1, protocol.namespace, writer);
+            try interface.emit(side, 1, protocol.namespace, pub_constants, writer);
         }
 
         for (targets) |target| {
@@ -449,16 +473,16 @@ const Protocol = struct {
                         });
                         return error.InvalidProtocolVersion;
                     }
-                    try global.interface.emit(side, target.version, protocol.namespace, writer);
+                    try global.interface.emit(side, target.version, protocol.namespace, pub_constants, writer);
                     for (global.children) |child| {
-                        try child.emit(side, target.version, protocol.namespace, writer);
+                        try child.emit(side, target.version, protocol.namespace, pub_constants, writer);
                     }
                 }
             }
         }
     }
 
-    fn emitCommon(protocol: Protocol, targets: []const Target, writer: anytype) !void {
+    fn emitCommon(protocol: Protocol, targets: []const Target, pub_constants:*std.ArrayList([]const u8), writer: anytype) !void {
         try protocol.emitCopyrightAndToplevelDescription(writer);
         try writer.writeAll(
             \\const common = @import("common.zig");
@@ -466,7 +490,7 @@ const Protocol = struct {
 
         for (protocol.version_locked_interfaces) |interface| {
             assert(interface.version == 1);
-            try interface.emitCommon(1, writer);
+            try interface.emitCommon(1, pub_constants, writer);
         }
 
         for (targets) |target| {
@@ -475,9 +499,9 @@ const Protocol = struct {
                     // We check this in emitClient() which is called first.
                     assert(global.interface.version >= target.version);
 
-                    try global.interface.emitCommon(target.version, writer);
+                    try global.interface.emitCommon(target.version, pub_constants, writer);
                     for (global.children) |child| {
-                        try child.emitCommon(target.version, writer);
+                        try child.emitCommon(target.version, pub_constants, writer);
                     }
                 }
             }
@@ -549,17 +573,19 @@ const Interface = struct {
         return error.UnexpectedEndOfFile;
     }
 
-    fn emit(interface: Interface, side: Side, target_version: u32, namespace: []const u8, writer: anytype) !void {
+    fn emit(interface: Interface, side: Side, target_version: u32, namespace: []const u8, pub_constants:*std.ArrayList([]const u8), writer: anytype) !void {
+        const trimmed_name = try std.fmt.allocPrint(pub_constants.allocator, "{}", .{titleCaseTrim(interface.name)});
         try writer.print(
-            \\pub const {[type]} = opaque {{
+            \\pub const {[type]s} = opaque {{
             \\ pub const generated_version = {[version]};
             \\ pub const getInterface = common.{[namespace]}.{[interface]}.getInterface;
         , .{
-            .type = titleCaseTrim(interface.name),
+            .type = trimmed_name,
             .version = @min(interface.version, target_version),
             .namespace = fmtId(namespace),
             .interface = fmtId(trimPrefix(interface.name)),
         });
+        try pub_constants.append(trimmed_name);
 
         for (interface.enums) |e| {
             if (e.since <= target_version) {
@@ -767,8 +793,10 @@ const Interface = struct {
         try writer.writeAll("};\n");
     }
 
-    fn emitCommon(interface: Interface, target_version: u32, writer: anytype) !void {
-        try writer.print("pub const {}", .{fmtId(trimPrefix(interface.name))});
+    fn emitCommon(interface: Interface, target_version: u32, pub_constants:*std.ArrayList([]const u8), writer: anytype) !void {
+        const constname = try std.fmt.allocPrint(pub_constants.allocator, "{}", .{fmtId(trimPrefix(interface.name))});
+        try pub_constants.append(constname);
+        try writer.print("pub const {s}", .{constname});
 
         // TODO: stop linking libwayland generated interface structs when
         // https://github.com/ziglang/zig/issues/131 is implemented

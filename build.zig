@@ -147,7 +147,7 @@ pub const ScanProtocolsStep = struct {
             var cache = step.owner.graph.cache.obtain();
             defer cache.deinit();
             const proto_path = protocol_path.path.getPath(step.owner);
-            cache.hash.addBytes("1");
+            cache.hash.addBytes("2");
             _ = try cache.addFile(proto_path, null);
             const hit = try cache.hit();
             const digest = cache.final();
