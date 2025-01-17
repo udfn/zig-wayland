@@ -136,6 +136,10 @@ pub const Server = opaque {
             data,
         );
     }
+
+    extern fn wl_display_set_default_max_buffer_size(server: *Server, max_buffer_size: usize) void;
+    pub const setDefaultMaxBufferSize = wl_display_set_default_max_buffer_size;
+
 };
 
 pub const Client = opaque {
