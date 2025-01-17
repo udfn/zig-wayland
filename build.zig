@@ -84,7 +84,7 @@ pub const ScanProtocolsStep = struct {
             .name = "zig-wl-scanner",
             .root_source_file = builder.path("src/scanner.zig"),
             .optimize = .ReleaseSmall,
-            .target = builder.host,
+            .target = builder.graph.host,
         });
         const run_scanner = builder.addRunArtifact(scanner_exe);
         self.* = .{
