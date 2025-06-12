@@ -20,6 +20,31 @@ pub const Target = struct {
     version: u32,
 };
 
+fn strExists(strs: []const []const u8, str: []const u8) bool {
+    for (strs) |a| {
+        if (std.mem.eql(u8, a, str)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn writeGeneratedFiles(arena: std.mem.Allocator, generated_files: []const Scanner.GeneratedFile, writer:anytype) !void {
+    var constants_written:std.ArrayListUnmanaged([]const u8) = .empty;
+    defer constants_written.deinit(arena);
+    for (generated_files) |generated_file| {
+        const constname = std.mem.sliceTo(generated_file.name, '.');
+        try writer.print("const {s} = @import(\"{s}\");\n", .{constname, generated_file.name});
+        for (generated_file.constants) |constant| {
+            if (strExists(constants_written.items, constant)) {
+                continue;
+            }
+            try writer.print("pub const {s} = {s}.{s};\n", .{constant, constname, constant});
+            try constants_written.append(arena, constant);
+        }
+    }
+}
+
 pub fn scan(
     gpa:mem.Allocator,
     root_dir: fs.Dir,
@@ -48,26 +73,27 @@ pub fn scan(
         });
         return;
     }
-
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
     {
         const client_file = try out_dir.createFile("client.zig", .{});
         defer client_file.close();
         const writer = client_file.writer();
+        var written_files:std.ArrayListUnmanaged([]const u8) = .empty;
+        defer written_files.deinit(arena.allocator());
 
         var iter = scanner.client.iterator();
         while (iter.next()) |entry| {
+            if (strExists(written_files.items, entry.key_ptr.*)) {
+                continue;
+            }
             try writer.print("pub const {s} = struct {{\n", .{entry.key_ptr.*});
             if (mem.eql(u8, entry.key_ptr.*, "wl")) {
                 try writer.writeAll(@embedFile("wayland_client_core.zig"));
             }
-            for (entry.value_ptr.items) |generated_file| {
-                const constname = std.mem.sliceTo(generated_file.name, '.');
-                try writer.print("const {s} = @import(\"{s}\");\n", .{constname, generated_file.name});
-                for (generated_file.constants) |constant| {
-                    try writer.print("pub const {s} = {s}.{s};\n", .{constant, constname, constant});
-                }
-            }
+            try writeGeneratedFiles(arena.allocator(), entry.value_ptr.items, writer);
             try writer.writeAll("};\n");
+            try written_files.append(arena.allocator(), entry.key_ptr.*);
         }
     }
 
@@ -75,20 +101,21 @@ pub fn scan(
         const server_file = try out_dir.createFile("server.zig", .{});
         defer server_file.close();
         const writer = server_file.writer();
+        var written_files:std.ArrayListUnmanaged([]const u8) = .empty;
+        defer written_files.deinit(arena.allocator());
+
 
         var iter = scanner.server.iterator();
         while (iter.next()) |entry| {
+            if (strExists(written_files.items, entry.key_ptr.*)) {
+                continue;
+            }
             try writer.print("pub const {s} = struct {{", .{entry.key_ptr.*});
             if (mem.eql(u8, entry.key_ptr.*, "wl"))
                 try writer.writeAll(@embedFile("wayland_server_core.zig"));
-            for (entry.value_ptr.items) |generated_file| {
-                const constname = std.mem.sliceTo(generated_file.name, '.');
-                try writer.print("const {s} = @import(\"{s}\");\n", .{constname, generated_file.name});
-                for (generated_file.constants) |constant| {
-                    try writer.print("pub const {s} = {s}.{s};\n", .{constant, constname, constant});
-                }
-            }
+            try writeGeneratedFiles(arena.allocator(), entry.value_ptr.items, writer);
             try writer.writeAll("};\n");
+            try written_files.append(arena.allocator(), entry.key_ptr.*);
         }
     }
 
@@ -461,6 +488,8 @@ const Protocol = struct {
             assert(interface.version == 1);
             try interface.emit(side, 1, protocol.namespace, pub_constants, writer);
         }
+        // ULTRA hack!
+        var written_children: std.BoundedArray([]const u8, 64) = .{};
 
         for (targets) |target| {
             for (protocol.globals) |global| {
@@ -475,7 +504,11 @@ const Protocol = struct {
                     }
                     try global.interface.emit(side, target.version, protocol.namespace, pub_constants, writer);
                     for (global.children) |child| {
+                        if (strExists(written_children.slice(), child.name)) {
+                            continue;
+                        }
                         try child.emit(side, target.version, protocol.namespace, pub_constants, writer);
+                        try written_children.append(child.name);
                     }
                 }
             }
@@ -492,6 +525,8 @@ const Protocol = struct {
             assert(interface.version == 1);
             try interface.emitCommon(1, pub_constants, writer);
         }
+        // ULTRA hack!
+        var written_children: std.BoundedArray([]const u8, 64) = .{};
 
         for (targets) |target| {
             for (protocol.globals) |global| {
@@ -501,7 +536,11 @@ const Protocol = struct {
 
                     try global.interface.emitCommon(target.version, pub_constants, writer);
                     for (global.children) |child| {
+                        if (strExists(written_children.slice(), child.name)) {
+                            continue;
+                        }
                         try child.emitCommon(target.version, pub_constants, writer);
+                        try written_children.append(child.name);
                     }
                 }
             }
@@ -1400,7 +1439,7 @@ const ScannerCli = struct {
 };
 
 pub fn main() !void {
-    var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{.safety = false}){};
+    var general_purpose_allocator = std.heap.DebugAllocator(.{.safety = false}){};
     const gpa = general_purpose_allocator.allocator();
 
     var cli = try ScannerCli.init(gpa);
