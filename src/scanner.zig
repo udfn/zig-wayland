@@ -29,30 +29,29 @@ fn strExists(strs: []const []const u8, str: []const u8) bool {
     return false;
 }
 
-fn writeGeneratedFiles(arena: std.mem.Allocator, generated_files: []const Scanner.GeneratedFile, writer:anytype) !void {
-    var constants_written:std.ArrayListUnmanaged([]const u8) = .empty;
+fn writeGeneratedFiles(arena: std.mem.Allocator, generated_files: []const Scanner.GeneratedFile, writer: anytype) !void {
+    var constants_written: std.ArrayListUnmanaged([]const u8) = .empty;
     defer constants_written.deinit(arena);
     for (generated_files) |generated_file| {
         const constname = std.mem.sliceTo(generated_file.name, '.');
-        try writer.print("const {s} = @import(\"{s}\");\n", .{constname, generated_file.name});
+        try writer.print("const {s} = @import(\"{s}\");\n", .{ constname, generated_file.name });
         for (generated_file.constants) |constant| {
             if (strExists(constants_written.items, constant)) {
                 continue;
             }
-            try writer.print("pub const {s} = {s}.{s};\n", .{constant, constname, constant});
+            try writer.print("pub const {s} = {s}.{s};\n", .{ constant, constname, constant });
             try constants_written.append(arena, constant);
         }
     }
 }
 
 pub fn scan(
-    gpa:mem.Allocator,
+    gpa: mem.Allocator,
     root_dir: fs.Dir,
     out_dir: fs.Dir,
     protocols: []const []const u8,
     targets: []const Target,
 ) !void {
-
     const wayland_file = try out_dir.createFile("wayland.zig", .{});
     try wayland_file.writeAll(
         \\pub const client = @import("client.zig");
@@ -74,12 +73,14 @@ pub fn scan(
         return;
     }
     var arena = std.heap.ArenaAllocator.init(gpa);
+    var buf: [2048]u8 = undefined;
+
     defer arena.deinit();
     {
         const client_file = try out_dir.createFile("client.zig", .{});
         defer client_file.close();
-        const writer = client_file.writer();
-        var written_files:std.ArrayListUnmanaged([]const u8) = .empty;
+        var writer = client_file.writer(&buf);
+        var written_files: std.ArrayListUnmanaged([]const u8) = .empty;
         defer written_files.deinit(arena.allocator());
 
         var iter = scanner.client.iterator();
@@ -87,56 +88,58 @@ pub fn scan(
             if (strExists(written_files.items, entry.key_ptr.*)) {
                 continue;
             }
-            try writer.print("pub const {s} = struct {{\n", .{entry.key_ptr.*});
+            try writer.interface.print("pub const {s} = struct {{\n", .{entry.key_ptr.*});
             if (mem.eql(u8, entry.key_ptr.*, "wl")) {
-                try writer.writeAll(@embedFile("wayland_client_core.zig"));
+                try writer.interface.writeAll(@embedFile("wayland_client_core.zig"));
             }
-            try writeGeneratedFiles(arena.allocator(), entry.value_ptr.items, writer);
-            try writer.writeAll("};\n");
+            try writeGeneratedFiles(arena.allocator(), entry.value_ptr.items, &writer.interface);
+            try writer.interface.writeAll("};\n");
             try written_files.append(arena.allocator(), entry.key_ptr.*);
         }
+        try writer.interface.flush();
     }
 
     {
         const server_file = try out_dir.createFile("server.zig", .{});
         defer server_file.close();
-        const writer = server_file.writer();
-        var written_files:std.ArrayListUnmanaged([]const u8) = .empty;
+        var writer = server_file.writer(&buf);
+        var written_files: std.ArrayListUnmanaged([]const u8) = .empty;
         defer written_files.deinit(arena.allocator());
-
 
         var iter = scanner.server.iterator();
         while (iter.next()) |entry| {
             if (strExists(written_files.items, entry.key_ptr.*)) {
                 continue;
             }
-            try writer.print("pub const {s} = struct {{", .{entry.key_ptr.*});
+            try writer.interface.print("pub const {s} = struct {{", .{entry.key_ptr.*});
             if (mem.eql(u8, entry.key_ptr.*, "wl"))
-                try writer.writeAll(@embedFile("wayland_server_core.zig"));
-            try writeGeneratedFiles(arena.allocator(), entry.value_ptr.items, writer);
-            try writer.writeAll("};\n");
+                try writer.interface.writeAll(@embedFile("wayland_server_core.zig"));
+            try writeGeneratedFiles(arena.allocator(), entry.value_ptr.items, &writer.interface);
+            try writer.interface.writeAll("};\n");
             try written_files.append(arena.allocator(), entry.key_ptr.*);
         }
+        try writer.interface.flush();
     }
 
     {
         const common_file = try out_dir.createFile("common.zig", .{});
         defer common_file.close();
-        const writer = common_file.writer();
-        try writer.writeAll(@embedFile("common_core.zig"));
+        var writer = common_file.writer(&buf);
+        try writer.interface.writeAll(@embedFile("common_core.zig"));
 
         var iter = scanner.common.iterator();
         while (iter.next()) |entry| {
-            try writer.print("pub const {s} = struct {{", .{entry.key_ptr.*});
+            try writer.interface.print("pub const {s} = struct {{", .{entry.key_ptr.*});
             for (entry.value_ptr.items) |generated_file| {
                 const constname = std.mem.sliceTo(generated_file.name, '.');
-                try writer.print("const {s} = @import(\"{s}\");\n", .{constname, generated_file.name});
+                try writer.interface.print("const {s} = @import(\"{s}\");\n", .{ constname, generated_file.name });
                 for (generated_file.constants) |constant| {
-                    try writer.print("pub const {s} = {s}.{s};\n", .{constant, constname, constant});
+                    try writer.interface.print("pub const {s} = {s}.{s};\n", .{ constant, constname, constant });
                 }
             }
-            try writer.writeAll("};\n");
+            try writer.interface.writeAll("};\n");
         }
+        try writer.interface.flush();
     }
 }
 
@@ -148,7 +151,7 @@ const Side = enum {
 const Scanner = struct {
     const GeneratedFile = struct {
         name: []const u8,
-        constants: []const[]const u8,
+        constants: []const []const u8,
     };
     /// Map from namespace to list of generated files
     const Map = std.StringArrayHashMap(std.ArrayListUnmanaged(GeneratedFile));
@@ -158,7 +161,7 @@ const Scanner = struct {
 
     remaining_targets: std.ArrayListUnmanaged(Target),
 
-    fn init(gpa:mem.Allocator, targets: []const Target) !Scanner {
+    fn init(gpa: mem.Allocator, targets: []const Target) !Scanner {
         return Scanner{
             .client = Map.init(gpa),
             .server = Map.init(gpa),
@@ -175,7 +178,6 @@ const Scanner = struct {
         deinit_map(&scanner.client);
         deinit_map(&scanner.server);
         deinit_map(&scanner.common);
-
     }
 
     fn deinit_map(map: *Map) void {
@@ -202,18 +204,16 @@ const Scanner = struct {
             return error.ParseFail;
         };
 
-        var buffered_writer: std.io.BufferedWriter(4096, std.fs.File.Writer) = .{
-            .unbuffered_writer = undefined,
-        };
+        var buf: [4096]u8 = undefined;
         {
             const client_filename = try mem.concat(scanner.client.allocator, u8, &[_][]const u8{ protocol.name, "_client.zig" });
             const client_file = try out_dir.createFile(client_filename, .{});
             defer client_file.close();
 
-            buffered_writer.unbuffered_writer = client_file.writer();
+            var buffered_writer = client_file.writer(&buf);
 
             var pub_constants = std.ArrayList([]const u8).init(scanner.client.allocator);
-            try protocol.emit(.client, scanner.remaining_targets.items, &pub_constants, buffered_writer.writer());
+            try protocol.emit(.client, scanner.remaining_targets.items, &pub_constants, &buffered_writer.interface);
 
             const gop = try scanner.client.getOrPutValue(protocol.namespace, .{});
             if (!gop.found_existing) gop.key_ptr.* = try scanner.client.allocator.dupe(u8, protocol.namespace);
@@ -222,7 +222,7 @@ const Scanner = struct {
                 .constants = try pub_constants.toOwnedSlice(),
             });
 
-            try buffered_writer.flush();
+            try buffered_writer.interface.flush();
         }
 
         {
@@ -230,10 +230,10 @@ const Scanner = struct {
             const server_file = try out_dir.createFile(server_filename, .{});
             defer server_file.close();
 
-            buffered_writer.unbuffered_writer = server_file.writer();
+            var buffered_writer = server_file.writer(&buf);
 
             var pub_constants = std.ArrayList([]const u8).init(scanner.client.allocator);
-            try protocol.emit(.server, scanner.remaining_targets.items, &pub_constants, buffered_writer.writer());
+            try protocol.emit(.server, scanner.remaining_targets.items, &pub_constants, &buffered_writer.interface);
 
             const gop = try scanner.server.getOrPutValue(protocol.namespace, .{});
             if (!gop.found_existing) gop.key_ptr.* = try scanner.client.allocator.dupe(u8, protocol.namespace);
@@ -241,7 +241,7 @@ const Scanner = struct {
                 .name = server_filename,
                 .constants = try pub_constants.toOwnedSlice(),
             });
-            try buffered_writer.flush();
+            try buffered_writer.interface.flush();
         }
 
         {
@@ -249,10 +249,10 @@ const Scanner = struct {
             const common_file = try out_dir.createFile(common_filename, .{});
             defer common_file.close();
 
-            buffered_writer.unbuffered_writer = common_file.writer();
+            var buffered_writer = common_file.writer(&buf);
 
             var pub_constants = std.ArrayList([]const u8).init(scanner.client.allocator);
-            try protocol.emitCommon(scanner.remaining_targets.items, &pub_constants, buffered_writer.writer());
+            try protocol.emitCommon(scanner.remaining_targets.items, &pub_constants, &buffered_writer.interface);
 
             const gop = try scanner.common.getOrPutValue(protocol.namespace, .{});
             if (!gop.found_existing) gop.key_ptr.* = try scanner.client.allocator.dupe(u8, protocol.namespace);
@@ -260,7 +260,7 @@ const Scanner = struct {
                 .name = common_filename,
                 .constants = try pub_constants.toOwnedSlice(),
             });
-            try buffered_writer.flush();
+            try buffered_writer.interface.flush();
         }
 
         {
@@ -296,7 +296,7 @@ const Protocol = struct {
     version_locked_interfaces: []const Interface,
     globals: []const Global,
 
-    fn parseXML(gpa:mem.Allocator, arena: mem.Allocator, xml_bytes: []const u8) !Protocol {
+    fn parseXML(gpa: mem.Allocator, arena: mem.Allocator, xml_bytes: []const u8) !Protocol {
         var parser = xml.Parser.init(xml_bytes);
         while (parser.next()) |ev| switch (ev) {
             .open_tag => |tag| if (mem.eql(u8, tag, "protocol")) return parse(gpa, arena, &parser),
@@ -305,7 +305,7 @@ const Protocol = struct {
         return error.UnexpectedEndOfFile;
     }
 
-    fn parse(gpa:mem.Allocator, arena: mem.Allocator, parser: *xml.Parser) !Protocol {
+    fn parse(gpa: mem.Allocator, arena: mem.Allocator, parser: *xml.Parser) !Protocol {
         var name: ?[]const u8 = null;
         var copyright: ?[]const u8 = null;
         var toplevel_description: ?[]const u8 = null;
@@ -382,7 +382,7 @@ const Protocol = struct {
         return error.UnexpectedEndOfFile;
     }
 
-    fn find_globals(gpa:mem.Allocator, arena: mem.Allocator, interfaces: std.StringArrayHashMap(Interface)) ![]const Global {
+    fn find_globals(gpa: mem.Allocator, arena: mem.Allocator, interfaces: std.StringArrayHashMap(Interface)) ![]const Global {
         var non_globals = std.StringHashMap(void).init(gpa);
         defer non_globals.deinit();
 
@@ -468,7 +468,7 @@ const Protocol = struct {
         }
     }
 
-    fn emit(protocol: Protocol, side: Side, targets: []const Target, pub_constants:*std.ArrayList([]const u8), writer: anytype) !void {
+    fn emit(protocol: Protocol, side: Side, targets: []const Target, pub_constants: *std.ArrayList([]const u8), writer: anytype) !void {
         try protocol.emitCopyrightAndToplevelDescription(writer);
         switch (side) {
             .client => try writer.writeAll(
@@ -515,7 +515,7 @@ const Protocol = struct {
         }
     }
 
-    fn emitCommon(protocol: Protocol, targets: []const Target, pub_constants:*std.ArrayList([]const u8), writer: anytype) !void {
+    fn emitCommon(protocol: Protocol, targets: []const Target, pub_constants: *std.ArrayList([]const u8), writer: anytype) !void {
         try protocol.emitCopyrightAndToplevelDescription(writer);
         try writer.writeAll(
             \\const common = @import("common.zig");
@@ -559,7 +559,7 @@ const Interface = struct {
     // These interfaces are special in that their version may never be increased.
     // That is, they are pinned to version 1 forever. They also may break the
     // normally required tree object creation hierarchy.
-    const version_locked_interfaces = std.StaticStringMap(void).initComptime( .{
+    const version_locked_interfaces = std.StaticStringMap(void).initComptime(.{
         .{"wl_display"},
         .{"wl_registry"},
         .{"wl_callback"},
@@ -569,7 +569,7 @@ const Interface = struct {
         return version_locked_interfaces.has(interface_name);
     }
 
-    fn parse(gpa:mem.Allocator, arena: mem.Allocator, parser: *xml.Parser) !Interface {
+    fn parse(gpa: mem.Allocator, arena: mem.Allocator, parser: *xml.Parser) !Interface {
         var name: ?[]const u8 = null;
         var version: ?u32 = null;
         var requests = std.ArrayList(Message).init(gpa);
@@ -612,12 +612,12 @@ const Interface = struct {
         return error.UnexpectedEndOfFile;
     }
 
-    fn emit(interface: Interface, side: Side, target_version: u32, namespace: []const u8, pub_constants:*std.ArrayList([]const u8), writer: anytype) !void {
-        const trimmed_name = try std.fmt.allocPrint(pub_constants.allocator, "{}", .{titleCaseTrim(interface.name)});
+    fn emit(interface: Interface, side: Side, target_version: u32, namespace: []const u8, pub_constants: *std.ArrayList([]const u8), writer: anytype) !void {
+        const trimmed_name = try std.fmt.allocPrint(pub_constants.allocator, "{f}", .{titleCaseTrim(interface.name)});
         try writer.print(
             \\pub const {[type]s} = opaque {{
             \\ pub const generated_version = {[version]};
-            \\ pub const getInterface = common.{[namespace]}.{[interface]}.getInterface;
+            \\ pub const getInterface = common.{[namespace]f}.{[interface]f}.getInterface;
         , .{
             .type = trimmed_name,
             .version = @min(interface.version, target_version),
@@ -628,7 +628,7 @@ const Interface = struct {
 
         for (interface.enums) |e| {
             if (e.since <= target_version) {
-                try writer.print("pub const {[type]} = common.{[namespace]}.{[interface]}.{[type]};\n", .{
+                try writer.print("pub const {[type]f} = common.{[namespace]f}.{[interface]f}.{[type]f};\n", .{
                     .type = titleCase(e.name),
                     .namespace = fmtId(namespace),
                     .interface = fmtId(trimPrefix(interface.name)),
@@ -638,8 +638,8 @@ const Interface = struct {
 
         if (side == .client) {
             try writer.print(
-                \\pub fn setQueue(_{[interface]}: *{[type]}, _queue: *client.wl.EventQueue) void {{
-                \\    const _proxy:*client.wl.Proxy = @ptrCast(_{[interface]});
+                \\pub fn setQueue(_{[interface]f}: *{[type]f}, _queue: *client.wl.EventQueue) void {{
+                \\    const _proxy:*client.wl.Proxy = @ptrCast(_{[interface]f});
                 \\    _proxy.setQueue(_queue);
                 \\}}
             , .{
@@ -648,8 +648,8 @@ const Interface = struct {
             });
 
             try writer.print(
-                \\pub fn getVersion(_{[interface]}: *{[type]}) u32 {{
-                \\    const _proxy:*client.wl.Proxy = @ptrCast(_{[interface]});
+                \\pub fn getVersion(_{[interface]f}: *{[type]f}) u32 {{
+                \\    const _proxy:*client.wl.Proxy = @ptrCast(_{[interface]f});
                 \\    return _proxy.getVersion();
                 \\}}
             , .{
@@ -671,14 +671,14 @@ const Interface = struct {
                 try writer.writeAll("};\n");
                 try writer.print(
                     \\pub inline fn setListener(
-                    \\    _{[interface]}: *{[type]},
+                    \\    _{[interface]f}: *{[type]f},
                     \\    comptime T: type,
-                    \\    _listener: *const fn ({[interface]}: *{[type]}, event: Event, data: T) void,
+                    \\    _listener: *const fn ({[interface]f}: *{[type]f}, event: Event, data: T) void,
                     \\    _data: T,
                     \\) void {{
-                    \\    const _proxy:*client.wl.Proxy = @ptrCast(_{[interface]});
+                    \\    const _proxy:*client.wl.Proxy = @ptrCast(_{[interface]f});
                     \\    const _mut_data:?*anyopaque = @ptrFromInt(@intFromPtr(_data));
-                    \\    _proxy.addDispatcher(common.Dispatcher({[type]}, T).dispatcher, _listener, _mut_data);
+                    \\    _proxy.addDispatcher(common.Dispatcher({[type]f}, T).dispatcher, _listener, _mut_data);
                     \\}}
                 , .{
                     .interface = fmtId(trimPrefix(interface.name)),
@@ -698,8 +698,8 @@ const Interface = struct {
                 try writer.writeAll(@embedFile("client_display_functions.zig"));
             } else if (!has_destroy) {
                 try writer.print(
-                    \\pub fn destroy(_{[interface]}: *{[type]}) void {{
-                    \\    const _proxy:*client.wl.Proxy = @ptrCast(_{[interface]});
+                    \\pub fn destroy(_{[interface]f}: *{[type]f}) void {{
+                    \\    const _proxy:*client.wl.Proxy = @ptrCast(_{[interface]f});
                     \\    _proxy.destroy();
                     \\}}
                 , .{
@@ -709,12 +709,12 @@ const Interface = struct {
             }
         } else {
             try writer.print(
-                \\pub fn create(_client: *server.wl.Client, _version: u32, _id: u32) !*{(tc)} {{
-                \\    return @as(*{[type]}, @ptrCast( try server.wl.Resource.create(_client, {[type]}, _version, _id)));
-                \\}}pub fn destroy(_{[interface]}: *{[type]}) void {{
-                \\    return @as(*server.wl.Resource, @ptrCast(_{[interface]})).destroy();
-                \\}}pub fn fromLink(_link: *server.wl.list.Link) *{[type]} {{
-                \\    return @as(*{[type]}, @ptrCast(server.wl.Resource.fromLink(_link)));
+                \\pub fn create(_client: *server.wl.Client, _version: u32, _id: u32) !*{f} {{
+                \\    return @as(*{[type]f}, @ptrCast( try server.wl.Resource.create(_client, {[type]f}, _version, _id)));
+                \\}}pub fn destroy(_{[interface]f}: *{[type]f}) void {{
+                \\    return @as(*server.wl.Resource, @ptrCast(_{[interface]f})).destroy();
+                \\}}pub fn fromLink(_link: *server.wl.list.Link) *{[type]f} {{
+                \\    return @as(*{[type]f}, @ptrCast(server.wl.Resource.fromLink(_link)));
                 \\}}
             , .{
                 .type = titleCaseTrim(interface.name),
@@ -729,8 +729,8 @@ const Interface = struct {
                 .{ "postNoMemory", "void" },
             }) |func|
                 try writer.print(
-                    \\pub fn {[function]}(_{[interface]}: *{[type]}) {[return_type]} {{
-                    \\    return @as(*server.wl.Resource, @ptrCast(_{[interface]})).{[function]}();
+                    \\pub fn {[function]f}(_{[interface]f}: *{[type]f}) {[return_type]f} {{
+                    \\    return @as(*server.wl.Resource, @ptrCast(_{[interface]f})).{[function]f}();
                     \\}}
                 , .{
                     .function = camelCase(func[0]),
@@ -744,8 +744,8 @@ const Interface = struct {
             } else false;
             if (has_error) {
                 try writer.print(
-                    \\pub fn postError({[interface]}: *{[type]}, _err: Error, _message: [*:0]const u8) void {{
-                    \\    return @as(*server.wl.Resource, @ptrCast({[interface]})).postError(@intCast(@intFromEnum(_err)), _message);
+                    \\pub fn postError({[interface]f}: *{[type]f}, _err: Error, _message: [*:0]const u8) void {{
+                    \\    return @as(*server.wl.Resource, @ptrCast({[interface]f})).postError(@intCast(@intFromEnum(_err)), _message);
                     \\}}
                 , .{
                     .interface = fmtId(trimPrefix(interface.name)),
@@ -768,21 +768,21 @@ const Interface = struct {
                 @setEvalBranchQuota(2500);
                 try writer.print(
                     \\pub inline fn setHandler(
-                    \\    _{[interface]}: *{[type]},
+                    \\    _{[interface]f}: *{[type]f},
                     \\    comptime T: type,
-                    \\    handle_request: *const fn (_{[interface]}: *{[type]}, request: Request, data: T) void,
-                    \\    comptime handle_destroy: ?fn (_{[interface]}: *{[type]}, data: T) void,
+                    \\    handle_request: *const fn (_{[interface]f}: *{[type]f}, request: Request, data: T) void,
+                    \\    comptime handle_destroy: ?fn (_{[interface]f}: *{[type]f}, data: T) void,
                     \\    _data: T,
                     \\) void {{
-                    \\    const _resource:*server.wl.Resource = @ptrCast(_{[interface]});
+                    \\    const _resource:*server.wl.Resource = @ptrCast(_{[interface]f});
                     \\    _resource.setDispatcher(
-                    \\        common.Dispatcher({[type]}, T).dispatcher,
+                    \\        common.Dispatcher({[type]f}, T).dispatcher,
                     \\        handle_request,
                     \\        @as(?*anyopaque, @ptrFromInt(@intFromPtr(_data))),
                     \\        if (handle_destroy) |_handler| struct {{
-                    \\            fn _wrapper(__resource: *server.wl.Resource) callconv(.C) void {{
+                    \\            fn _wrapper(__resource: *server.wl.Resource) callconv(.c) void {{
                     \\                @call(.always_inline, _handler, .{{
-                    \\                    @as(*{[type]}, @ptrCast(__resource)),
+                    \\                    @as(*{[type]f}, @ptrCast(__resource)),
                     \\                    @as(T, @ptrFromInt(@intFromPtr(__resource.getUserData()))),
                     \\                }});
                     \\            }}
@@ -796,20 +796,20 @@ const Interface = struct {
             } else {
                 try writer.print(
                     \\pub inline fn setHandler(
-                    \\    _{[interface]}: *{[type]},
+                    \\    _{[interface]f}: *{[type]f},
                     \\    comptime T: type,
-                    \\    comptime handle_destroy: ?fn (_{[interface]}: *{[type]}, data: T) void,
+                    \\    comptime handle_destroy: ?fn (_{[interface]f}: *{[type]f}, data: T) void,
                     \\    _data: T,
                     \\) void {{
-                    \\    const _resource:*server.wl.Resource = @ptrCast(_{[interface]});
+                    \\    const _resource:*server.wl.Resource = @ptrCast(_{[interface]f});
                     \\    _resource.setDispatcher(
                     \\        null,
                     \\        null,
                     \\        @as(?*anyopaque, @ptrFromInt(@intFromPtr(_data))),
                     \\        if (handle_destroy) |_handler| struct {{
-                    \\            fn _wrapper(__resource: *server.wl.Resource) callconv(.C) void {{
+                    \\            fn _wrapper(__resource: *server.wl.Resource) callconv(.c) void {{
                     \\                @call(.always_inline, _handler, .{{
-                    \\                    @as(*{[type]}, @ptrCast(__resource)),
+                    \\                    @as(*{[type]f}, @ptrCast(__resource)),
                     \\                    @as(T, @ptrFromInt(@intFromPtr(__resource.getUserData()))),
                     \\                }});
                     \\            }}
@@ -832,8 +832,8 @@ const Interface = struct {
         try writer.writeAll("};\n");
     }
 
-    fn emitCommon(interface: Interface, target_version: u32, pub_constants:*std.ArrayList([]const u8), writer: anytype) !void {
-        const constname = try std.fmt.allocPrint(pub_constants.allocator, "{}", .{fmtId(trimPrefix(interface.name))});
+    fn emitCommon(interface: Interface, target_version: u32, pub_constants: *std.ArrayList([]const u8), writer: anytype) !void {
+        const constname = try std.fmt.allocPrint(pub_constants.allocator, "{f}", .{fmtId(trimPrefix(interface.name))});
         try pub_constants.append(constname);
         try writer.print("pub const {s}", .{constname});
 
@@ -868,7 +868,7 @@ const Message = struct {
         destructor: void,
     },
 
-    fn parse(gpa:mem.Allocator, arena: mem.Allocator, parser: *xml.Parser) !Message {
+    fn parse(gpa: mem.Allocator, arena: mem.Allocator, parser: *xml.Parser) !Message {
         var name: ?[]const u8 = null;
         var since: ?u32 = null;
         var args = std.ArrayList(Arg).init(gpa);
@@ -915,7 +915,7 @@ const Message = struct {
     }
 
     fn emitField(message: Message, side: Side, writer: anytype) !void {
-        try writer.print("{}", .{fmtId(message.name)});
+        try writer.print("{f}", .{fmtId(message.name)});
         if (message.args.len == 0) {
             try writer.writeAll(": void,");
             return;
@@ -923,13 +923,13 @@ const Message = struct {
         try writer.writeAll(": struct {");
         for (message.args) |arg| {
             if (side == .server and arg.kind == .new_id and arg.kind.new_id == null) {
-                try writer.print("interface_name: [*:0]const u8, version: u32,{}: u32", .{fmtId(arg.name)});
+                try writer.print("interface_name: [*:0]const u8, version: u32,{f}: u32", .{fmtId(arg.name)});
             } else if (side == .client and arg.kind == .new_id) {
-                try writer.print("{}: *", .{fmtId(arg.name)});
+                try writer.print("{f}: *", .{fmtId(arg.name)});
                 try printAbsolute(.client, writer, arg.kind.new_id.?);
                 std.debug.assert(!arg.allow_null);
             } else {
-                try writer.print("{}:", .{fmtId(arg.name)});
+                try writer.print("{f}:", .{fmtId(arg.name)});
                 // See notes on NULL in doc comment for wl_message in wayland-util.h
                 if (side == .client and arg.kind == .object and !arg.allow_null)
                     try writer.writeByte('?');
@@ -944,14 +944,14 @@ const Message = struct {
         try writer.writeAll("pub fn ");
         if (side == .server) {
             if (message.kind == .destructor) {
-                try writer.print("destroySend{}", .{titleCase(message.name)});
+                try writer.print("destroySend{f}", .{titleCase(message.name)});
             } else {
-                try writer.print("send{}", .{titleCase(message.name)});
+                try writer.print("send{f}", .{titleCase(message.name)});
             }
         } else {
-            try writer.print("{}", .{camelCase(message.name)});
+            try writer.print("{f}", .{camelCase(message.name)});
         }
-        try writer.print("(_{}: *{}", .{
+        try writer.print("(_{f}: *{f}", .{
             fmtId(trimPrefix(interface.name)),
             titleCaseTrim(interface.name),
         });
@@ -990,7 +990,7 @@ const Message = struct {
             }
             try writer.writeAll("const _proxy:*client.wl.Proxy = @ptrCast(_");
         }
-        try writer.print("{});", .{fmtId(trimPrefix(interface.name))});
+        try writer.print("{f});", .{fmtId(trimPrefix(interface.name))});
         if (message.args.len > 0) {
             try writer.writeAll("var _args = [_]common.Argument{");
             for (message.args) |arg| {
@@ -1008,8 +1008,8 @@ const Message = struct {
                             const c_type = if (arg.kind == .uint) "u32" else "i32";
                             try writer.print(
                                 \\ )) {{
-                                \\    .@"enum" => @as({[ct]s}, @intCast(@intFromEnum(_{[an]}))),
-                                \\    .@"struct" => @as(u32, @bitCast(_{[an]})),
+                                \\    .@"enum" => @as({[ct]s}, @intCast(@intFromEnum(_{[an]f}))),
+                                \\    .@"struct" => @as(u32, @bitCast(_{[an]f})),
                                 \\    else => unreachable,
                                 \\ }}
                             , .{ .ct = c_type, .an = fmtId(arg.name) });
@@ -1154,13 +1154,13 @@ const Arg = struct {
                     if (mem.indexOfScalar(u8, name, '.')) |dot_index| {
                         // Turn a reference like wl_shm.format into common.wl.shm.Format
                         const us_index = mem.indexOfScalar(u8, name, '_') orelse 0;
-                        try writer.print("common.{s}.{s}{}", .{
+                        try writer.print("common.{s}.{s}{f}", .{
                             name[0..us_index],
                             name[us_index + 1 .. dot_index + 1],
                             titleCase(name[dot_index + 1 ..]),
                         });
                     } else {
-                        try writer.print("{}", .{titleCase(name)});
+                        try writer.print("{f}", .{titleCase(name)});
                     }
                 } else if (arg.kind == .int) {
                     try writer.writeAll("i32");
@@ -1197,7 +1197,7 @@ const Enum = struct {
     entries: []const Entry,
     bitfield: bool,
 
-    fn parse(gpa:mem.Allocator, arena: mem.Allocator, parser: *xml.Parser) !Enum {
+    fn parse(gpa: mem.Allocator, arena: mem.Allocator, parser: *xml.Parser) !Enum {
         var name: ?[]const u8 = null;
         var since: ?u32 = null;
         var entries = std.ArrayList(Entry).init(gpa);
@@ -1237,7 +1237,7 @@ const Enum = struct {
     }
 
     fn emit(e: Enum, target_version: u32, writer: anytype) !void {
-        try writer.print("pub const {}", .{titleCase(e.name)});
+        try writer.print("pub const {f}", .{titleCase(e.name)});
 
         if (e.bitfield) {
             var entries_emitted: u8 = 0;
@@ -1263,7 +1263,7 @@ const Enum = struct {
         try writer.writeAll(" = enum(c_int) {");
         for (e.entries) |entry| {
             if (entry.since <= target_version) {
-                try writer.print("{}= {s},", .{ fmtId(entry.name), entry.value });
+                try writer.print("{f}= {s},", .{ fmtId(entry.name), entry.value });
             }
         }
         // Always generate non-exhaustive enums to ensure forward compatability.
@@ -1333,9 +1333,7 @@ fn formatCaseImpl(comptime case: Case, comptime trim: bool) type {
     return struct {
         pub fn f(
             bytes: []const u8,
-            comptime _: []const u8,
-            _: std.fmt.FormatOptions,
-            writer: anytype,
+            writer: *std.Io.Writer,
         ) !void {
             if (case == .camel and std.zig.Token.getKeyword(bytes) != null) {
                 try writer.print("@\"{s}\"", .{bytes});
@@ -1355,15 +1353,15 @@ fn formatCaseImpl(comptime case: Case, comptime trim: bool) type {
     };
 }
 
-fn titleCase(bytes: []const u8) std.fmt.Formatter(formatCaseImpl(.title, false).f) {
+fn titleCase(bytes: []const u8) std.fmt.Alt([]const u8, formatCaseImpl(.title, false).f) {
     return .{ .data = bytes };
 }
 
-fn titleCaseTrim(bytes: []const u8) std.fmt.Formatter(formatCaseImpl(.title, true).f) {
+fn titleCaseTrim(bytes: []const u8) std.fmt.Alt([]const u8, formatCaseImpl(.title, true).f) {
     return .{ .data = bytes };
 }
 
-fn camelCase(bytes: []const u8) std.fmt.Formatter(formatCaseImpl(.camel, false).f) {
+fn camelCase(bytes: []const u8) std.fmt.Alt([]const u8, formatCaseImpl(.camel, false).f) {
     return .{ .data = bytes };
 }
 
@@ -1372,7 +1370,7 @@ fn camelCaseTrim(bytes: []const u8) std.fmt.Formatter(formatCaseImpl(.camel, tru
 }
 
 fn printAbsolute(side: Side, writer: anytype, interface: []const u8) !void {
-    try writer.print("{s}.{s}.{}", .{
+    try writer.print("{s}.{s}.{f}", .{
         @tagName(side),
         prefix(interface) orelse return error.MissingPrefix,
         titleCaseTrim(interface),
@@ -1380,17 +1378,17 @@ fn printAbsolute(side: Side, writer: anytype, interface: []const u8) !void {
 }
 
 const ScannerCli = struct {
-    out_dir:std.fs.Dir,
-    protocols:[]const []const u8,
-    targets:[]const Target,
+    out_dir: std.fs.Dir,
+    protocols: []const []const u8,
+    targets: []const Target,
 
-    fn init(allocator:mem.Allocator) !ScannerCli {
+    fn init(allocator: mem.Allocator) !ScannerCli {
         var argit = try std.process.argsWithAllocator(allocator);
         defer argit.deinit();
         _ = argit.skip();
         var protocols = std.ArrayListUnmanaged([]const u8){};
         var targets = std.ArrayListUnmanaged(Target){};
-        var maybe_out_dir:?[]const u8 = null;
+        var maybe_out_dir: ?[]const u8 = null;
         while (argit.next()) |arg| {
             if (mem.startsWith(u8, arg, "-T")) {
                 const target = arg[2..];
@@ -1398,22 +1396,17 @@ const ScannerCli = struct {
                     std.log.err("invalid target '{s}'", .{target});
                     continue;
                 };
-                const version = std.fmt.parseUnsigned(u32, target[colonpos+1..], 10) catch {
-                    std.log.err("invalid version for {s}: '{s}'", .{target[0..colonpos], target[colonpos+1..]});
+                const version = std.fmt.parseUnsigned(u32, target[colonpos + 1 ..], 10) catch {
+                    std.log.err("invalid version for {s}: '{s}'", .{ target[0..colonpos], target[colonpos + 1 ..] });
                     continue;
                 };
                 const name = try allocator.dupe(u8, target[0..colonpos]);
-                try targets.append(allocator, .{
-                    .name = name,
-                    .version = version
-                });
+                try targets.append(allocator, .{ .name = name, .version = version });
             } else if (mem.startsWith(u8, arg, "-O")) {
                 maybe_out_dir = std.fs.path.dirname(arg[2..]);
-
             } else if (mem.startsWith(u8, arg, "-P")) {
                 try protocols.append(allocator, try allocator.dupe(u8, arg[2..]));
             }
-
         }
         const out_dir = maybe_out_dir orelse {
             std.log.err("no output dir specified", .{});
@@ -1425,7 +1418,7 @@ const ScannerCli = struct {
             .out_dir = try std.fs.cwd().makeOpenPath(out_dir, .{}),
         };
     }
-    pub fn deinit(self:*ScannerCli, allocator:mem.Allocator) void {
+    pub fn deinit(self: *ScannerCli, allocator: mem.Allocator) void {
         for (self.protocols) |protocol| {
             allocator.free(protocol);
         }
@@ -1439,7 +1432,7 @@ const ScannerCli = struct {
 };
 
 pub fn main() !void {
-    var general_purpose_allocator = std.heap.DebugAllocator(.{.safety = false}){};
+    var general_purpose_allocator = std.heap.DebugAllocator(.{ .safety = false }){};
     const gpa = general_purpose_allocator.allocator();
 
     var cli = try ScannerCli.init(gpa);
