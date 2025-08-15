@@ -212,7 +212,7 @@ const Scanner = struct {
 
             var buffered_writer = client_file.writer(&buf);
 
-            var pub_constants = std.ArrayList([]const u8).init(scanner.client.allocator);
+            var pub_constants: std.array_list.Managed([]const u8) = .init(scanner.client.allocator);
             try protocol.emit(.client, scanner.remaining_targets.items, &pub_constants, &buffered_writer.interface);
 
             const gop = try scanner.client.getOrPutValue(protocol.namespace, .{});
@@ -232,7 +232,7 @@ const Scanner = struct {
 
             var buffered_writer = server_file.writer(&buf);
 
-            var pub_constants = std.ArrayList([]const u8).init(scanner.client.allocator);
+            var pub_constants: std.array_list.Managed([]const u8) = .init(scanner.client.allocator);
             try protocol.emit(.server, scanner.remaining_targets.items, &pub_constants, &buffered_writer.interface);
 
             const gop = try scanner.server.getOrPutValue(protocol.namespace, .{});
@@ -251,7 +251,7 @@ const Scanner = struct {
 
             var buffered_writer = common_file.writer(&buf);
 
-            var pub_constants = std.ArrayList([]const u8).init(scanner.client.allocator);
+            var pub_constants: std.array_list.Managed([]const u8) = .init(scanner.client.allocator);
             try protocol.emitCommon(scanner.remaining_targets.items, &pub_constants, &buffered_writer.interface);
 
             const gop = try scanner.common.getOrPutValue(protocol.namespace, .{});
@@ -309,8 +309,8 @@ const Protocol = struct {
         var name: ?[]const u8 = null;
         var copyright: ?[]const u8 = null;
         var toplevel_description: ?[]const u8 = null;
-        var version_locked_interfaces = std.ArrayList(Interface).init(gpa);
-        defer version_locked_interfaces.deinit();
+        var version_locked_interfaces: std.ArrayList(Interface) = .empty;
+        defer version_locked_interfaces.deinit(gpa);
         var interfaces = std.StringArrayHashMap(Interface).init(gpa);
         defer interfaces.deinit();
 
@@ -342,7 +342,7 @@ const Protocol = struct {
                 } else if (mem.eql(u8, tag, "interface")) {
                     const interface = try Interface.parse(gpa, arena, parser);
                     if (Interface.version_locked(interface.name)) {
-                        try version_locked_interfaces.append(interface);
+                        try version_locked_interfaces.append(gpa, interface);
                     } else {
                         const gop = try interfaces.getOrPut(interface.name);
                         if (gop.found_existing) return error.DuplicateInterfaceName;
@@ -404,8 +404,8 @@ const Protocol = struct {
             }
         }
 
-        var globals = std.ArrayList(Global).init(gpa);
-        defer globals.deinit();
+        var globals: std.ArrayList(Global) = .empty;
+        defer globals.deinit(gpa);
 
         for (interfaces.values()) |interface| {
             if (!non_globals.contains(interface.name)) {
@@ -414,7 +414,7 @@ const Protocol = struct {
 
                 try find_children(interface, interfaces, &children);
 
-                try globals.append(.{
+                try globals.append(gpa, .{
                     .interface = interface,
                     .children = try arena.dupe(Interface, children.values()),
                 });
@@ -468,7 +468,7 @@ const Protocol = struct {
         }
     }
 
-    fn emit(protocol: Protocol, side: Side, targets: []const Target, pub_constants: *std.ArrayList([]const u8), writer: anytype) !void {
+    fn emit(protocol: Protocol, side: Side, targets: []const Target, pub_constants: *std.array_list.Managed([]const u8), writer: anytype) !void {
         try protocol.emitCopyrightAndToplevelDescription(writer);
         switch (side) {
             .client => try writer.writeAll(
@@ -489,7 +489,8 @@ const Protocol = struct {
             try interface.emit(side, 1, protocol.namespace, pub_constants, writer);
         }
         // ULTRA hack!
-        var written_children: std.BoundedArray([]const u8, 64) = .{};
+        var buf: [64][]const u8 = undefined;
+        var written_children: std.ArrayList([]const u8) = .initBuffer(&buf);
 
         for (targets) |target| {
             for (protocol.globals) |global| {
@@ -504,18 +505,18 @@ const Protocol = struct {
                     }
                     try global.interface.emit(side, target.version, protocol.namespace, pub_constants, writer);
                     for (global.children) |child| {
-                        if (strExists(written_children.slice(), child.name)) {
+                        if (strExists(written_children.items, child.name)) {
                             continue;
                         }
                         try child.emit(side, target.version, protocol.namespace, pub_constants, writer);
-                        try written_children.append(child.name);
+                        try written_children.appendBounded(child.name);
                     }
                 }
             }
         }
     }
 
-    fn emitCommon(protocol: Protocol, targets: []const Target, pub_constants: *std.ArrayList([]const u8), writer: anytype) !void {
+    fn emitCommon(protocol: Protocol, targets: []const Target, pub_constants: *std.array_list.Managed([]const u8), writer: anytype) !void {
         try protocol.emitCopyrightAndToplevelDescription(writer);
         try writer.writeAll(
             \\const common = @import("common.zig");
@@ -526,7 +527,8 @@ const Protocol = struct {
             try interface.emitCommon(1, pub_constants, writer);
         }
         // ULTRA hack!
-        var written_children: std.BoundedArray([]const u8, 64) = .{};
+        var hack_buf: [64][]const u8 = undefined;
+        var written_children: std.ArrayList([]const u8) = .initBuffer(&hack_buf);
 
         for (targets) |target| {
             for (protocol.globals) |global| {
@@ -536,11 +538,11 @@ const Protocol = struct {
 
                     try global.interface.emitCommon(target.version, pub_constants, writer);
                     for (global.children) |child| {
-                        if (strExists(written_children.slice(), child.name)) {
+                        if (strExists(written_children.items, child.name)) {
                             continue;
                         }
                         try child.emitCommon(target.version, pub_constants, writer);
-                        try written_children.append(child.name);
+                        try written_children.appendBounded(child.name);
                     }
                 }
             }
@@ -572,22 +574,22 @@ const Interface = struct {
     fn parse(gpa: mem.Allocator, arena: mem.Allocator, parser: *xml.Parser) !Interface {
         var name: ?[]const u8 = null;
         var version: ?u32 = null;
-        var requests = std.ArrayList(Message).init(gpa);
-        defer requests.deinit();
-        var events = std.ArrayList(Message).init(gpa);
-        defer events.deinit();
-        var enums = std.ArrayList(Enum).init(gpa);
-        defer enums.deinit();
+        var requests: std.ArrayList(Message) = .empty;
+        defer requests.deinit(gpa);
+        var events: std.ArrayList(Message) = .empty;
+        defer events.deinit(gpa);
+        var enums: std.ArrayList(Enum) = .empty;
+        defer enums.deinit(gpa);
 
         while (parser.next()) |ev| switch (ev) {
             .open_tag => |tag| {
                 // TODO: parse description
                 if (mem.eql(u8, tag, "request"))
-                    try requests.append(try Message.parse(gpa, arena, parser))
+                    try requests.append(gpa, try Message.parse(gpa, arena, parser))
                 else if (mem.eql(u8, tag, "event"))
-                    try events.append(try Message.parse(gpa, arena, parser))
+                    try events.append(gpa, try Message.parse(gpa, arena, parser))
                 else if (mem.eql(u8, tag, "enum"))
-                    try enums.append(try Enum.parse(gpa, arena, parser));
+                    try enums.append(gpa, try Enum.parse(gpa, arena, parser));
             },
             .attribute => |attr| {
                 if (mem.eql(u8, attr.name, "name")) {
@@ -612,7 +614,7 @@ const Interface = struct {
         return error.UnexpectedEndOfFile;
     }
 
-    fn emit(interface: Interface, side: Side, target_version: u32, namespace: []const u8, pub_constants: *std.ArrayList([]const u8), writer: anytype) !void {
+    fn emit(interface: Interface, side: Side, target_version: u32, namespace: []const u8, pub_constants: *std.array_list.Managed([]const u8), writer: anytype) !void {
         const trimmed_name = try std.fmt.allocPrint(pub_constants.allocator, "{f}", .{titleCaseTrim(interface.name)});
         try writer.print(
             \\pub const {[type]s} = opaque {{
@@ -832,7 +834,7 @@ const Interface = struct {
         try writer.writeAll("};\n");
     }
 
-    fn emitCommon(interface: Interface, target_version: u32, pub_constants: *std.ArrayList([]const u8), writer: anytype) !void {
+    fn emitCommon(interface: Interface, target_version: u32, pub_constants: *std.array_list.Managed([]const u8), writer: anytype) !void {
         const constname = try std.fmt.allocPrint(pub_constants.allocator, "{f}", .{fmtId(trimPrefix(interface.name))});
         try pub_constants.append(constname);
         try writer.print("pub const {s}", .{constname});
@@ -871,19 +873,22 @@ const Message = struct {
     fn parse(gpa: mem.Allocator, arena: mem.Allocator, parser: *xml.Parser) !Message {
         var name: ?[]const u8 = null;
         var since: ?u32 = null;
-        var args = std.ArrayList(Arg).init(gpa);
-        defer args.deinit();
+        var args: std.ArrayList(Arg) = .empty;
+        defer args.deinit(gpa);
         var destructor = false;
 
         while (parser.next()) |ev| switch (ev) {
             .open_tag => |tag| {
                 // TODO: parse description
                 if (mem.eql(u8, tag, "arg"))
-                    try args.append(try Arg.parse(arena, parser));
+                    try args.append(gpa, try Arg.parse(arena, parser));
             },
             .attribute => |attr| {
                 if (mem.eql(u8, attr.name, "name")) {
-                    if (name != null) return error.DuplicateName;
+                    if (name) |n| {
+                        std.log.err("name {s} duplicated: {s}!", .{ n, attr.raw_value });
+                        return error.DuplicateName;
+                    }
                     name = try attr.dupeValue(arena);
                 } else if (mem.eql(u8, attr.name, "since")) {
                     if (since != null) return error.DuplicateSince;
@@ -1200,15 +1205,15 @@ const Enum = struct {
     fn parse(gpa: mem.Allocator, arena: mem.Allocator, parser: *xml.Parser) !Enum {
         var name: ?[]const u8 = null;
         var since: ?u32 = null;
-        var entries = std.ArrayList(Entry).init(gpa);
-        defer entries.deinit();
+        var entries: std.ArrayList(Entry) = .empty;
+        defer entries.deinit(gpa);
         var bitfield: ?bool = null;
 
         while (parser.next()) |ev| switch (ev) {
             .open_tag => |tag| {
                 // TODO: parse description
                 if (mem.eql(u8, tag, "entry"))
-                    try entries.append(try Entry.parse(arena, parser));
+                    try entries.append(gpa, try Entry.parse(arena, parser));
             },
             .attribute => |attr| {
                 if (mem.eql(u8, attr.name, "name")) {
