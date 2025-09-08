@@ -192,13 +192,10 @@ const Scanner = struct {
     }
 
     fn scanProtocol(scanner: *Scanner, root_dir: fs.Dir, out_dir: fs.Dir, xml_path: []const u8) !void {
-        const xml_file = try root_dir.openFile(xml_path, .{});
-        defer xml_file.close();
-
         var arena = std.heap.ArenaAllocator.init(scanner.client.allocator);
         defer arena.deinit();
 
-        const xml_bytes = try xml_file.readToEndAlloc(arena.allocator(), 512 * 4096);
+        const xml_bytes = try root_dir.readFileAlloc(xml_path, arena.allocator(), .limited(1024 * 1024));
         const protocol = Protocol.parseXML(scanner.client.allocator, arena.allocator(), xml_bytes) catch |err| {
             log.err("failed to parse {s}: {s}", .{ xml_path, @errorName(err) });
             return error.ParseFail;
