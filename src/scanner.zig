@@ -47,23 +47,25 @@ fn writeGeneratedFiles(arena: std.mem.Allocator, generated_files: []const Scanne
 
 pub fn scan(
     gpa: mem.Allocator,
-    root_dir: fs.Dir,
-    out_dir: fs.Dir,
+    io: std.Io,
+    root_dir: std.Io.Dir,
+    out_dir: std.Io.Dir,
     protocols: []const []const u8,
     targets: []const Target,
 ) !void {
-    const wayland_file = try out_dir.createFile("wayland.zig", .{});
-    try wayland_file.writeAll(
+    const wayland_file = try out_dir.createFile(io, "wayland.zig", .{});
+    var wayland_file_writer = wayland_file.writer(io, &.{});
+    try wayland_file_writer.interface.writeAll(
         \\pub const client = @import("client.zig");
         \\pub const server = @import("server.zig");
     );
-    defer wayland_file.close();
+    defer wayland_file.close(io);
 
     var scanner = try Scanner.init(gpa, targets);
     defer scanner.deinit();
 
     for (protocols) |xml_path| {
-        try scanner.scanProtocol(root_dir, out_dir, xml_path);
+        try scanner.scanProtocol(io, root_dir, out_dir, xml_path);
     }
 
     if (scanner.remaining_targets.items.len != 0) {
@@ -77,9 +79,9 @@ pub fn scan(
 
     defer arena.deinit();
     {
-        const client_file = try out_dir.createFile("client.zig", .{});
-        defer client_file.close();
-        var writer = client_file.writer(&buf);
+        const client_file = try out_dir.createFile(io, "client.zig", .{});
+        defer client_file.close(io);
+        var writer = client_file.writer(io, &buf);
         var written_files: std.ArrayListUnmanaged([]const u8) = .empty;
         defer written_files.deinit(arena.allocator());
 
@@ -100,9 +102,9 @@ pub fn scan(
     }
 
     {
-        const server_file = try out_dir.createFile("server.zig", .{});
-        defer server_file.close();
-        var writer = server_file.writer(&buf);
+        const server_file = try out_dir.createFile(io, "server.zig", .{});
+        defer server_file.close(io);
+        var writer = server_file.writer(io, &buf);
         var written_files: std.ArrayListUnmanaged([]const u8) = .empty;
         defer written_files.deinit(arena.allocator());
 
@@ -122,9 +124,9 @@ pub fn scan(
     }
 
     {
-        const common_file = try out_dir.createFile("common.zig", .{});
-        defer common_file.close();
-        var writer = common_file.writer(&buf);
+        const common_file = try out_dir.createFile(io, "common.zig", .{});
+        defer common_file.close(io);
+        var writer = common_file.writer(io, &buf);
         try writer.interface.writeAll(@embedFile("common_core.zig"));
 
         var iter = scanner.common.iterator();
@@ -191,11 +193,11 @@ const Scanner = struct {
         map.deinit();
     }
 
-    fn scanProtocol(scanner: *Scanner, root_dir: fs.Dir, out_dir: fs.Dir, xml_path: []const u8) !void {
+    fn scanProtocol(scanner: *Scanner, io: std.Io, root_dir: std.Io.Dir, out_dir: std.Io.Dir, xml_path: []const u8) !void {
         var arena = std.heap.ArenaAllocator.init(scanner.client.allocator);
         defer arena.deinit();
 
-        const xml_bytes = try root_dir.readFileAlloc(xml_path, arena.allocator(), .limited(1024 * 1024));
+        const xml_bytes = try root_dir.readFileAlloc(io, xml_path, arena.allocator(), .limited(1024 * 1024));
         const protocol = Protocol.parseXML(scanner.client.allocator, arena.allocator(), xml_bytes) catch |err| {
             log.err("failed to parse {s}: {s}", .{ xml_path, @errorName(err) });
             return error.ParseFail;
@@ -204,10 +206,10 @@ const Scanner = struct {
         var buf: [4096]u8 = undefined;
         {
             const client_filename = try mem.concat(scanner.client.allocator, u8, &[_][]const u8{ protocol.name, "_client.zig" });
-            const client_file = try out_dir.createFile(client_filename, .{});
-            defer client_file.close();
+            const client_file = try out_dir.createFile(io, client_filename, .{});
+            defer client_file.close(io);
 
-            var buffered_writer = client_file.writer(&buf);
+            var buffered_writer = client_file.writer(io, &buf);
 
             var pub_constants: std.array_list.Managed([]const u8) = .init(scanner.client.allocator);
             try protocol.emit(.client, scanner.remaining_targets.items, &pub_constants, &buffered_writer.interface);
@@ -224,10 +226,10 @@ const Scanner = struct {
 
         {
             const server_filename = try mem.concat(scanner.client.allocator, u8, &[_][]const u8{ protocol.name, "_server.zig" });
-            const server_file = try out_dir.createFile(server_filename, .{});
-            defer server_file.close();
+            const server_file = try out_dir.createFile(io, server_filename, .{});
+            defer server_file.close(io);
 
-            var buffered_writer = server_file.writer(&buf);
+            var buffered_writer = server_file.writer(io, &buf);
 
             var pub_constants: std.array_list.Managed([]const u8) = .init(scanner.client.allocator);
             try protocol.emit(.server, scanner.remaining_targets.items, &pub_constants, &buffered_writer.interface);
@@ -243,10 +245,10 @@ const Scanner = struct {
 
         {
             const common_filename = try mem.concat(scanner.client.allocator, u8, &[_][]const u8{ protocol.name, "_common.zig" });
-            const common_file = try out_dir.createFile(common_filename, .{});
-            defer common_file.close();
+            const common_file = try out_dir.createFile(io, common_filename, .{});
+            defer common_file.close(io);
 
-            var buffered_writer = common_file.writer(&buf);
+            var buffered_writer = common_file.writer(io, &buf);
 
             var pub_constants: std.array_list.Managed([]const u8) = .init(scanner.client.allocator);
             try protocol.emitCommon(scanner.remaining_targets.items, &pub_constants, &buffered_writer.interface);
@@ -1380,14 +1382,17 @@ fn printAbsolute(side: Side, writer: anytype, interface: []const u8) !void {
 }
 
 const ScannerCli = struct {
-    out_dir: std.fs.Dir,
+    var io_impl: std.Io.Threaded = .init_single_threaded;
+    out_dir: std.Io.Dir,
     protocols: []const []const u8,
     targets: []const Target,
+    io: std.Io,
 
     fn init(allocator: mem.Allocator) !ScannerCli {
         var argit = try std.process.argsWithAllocator(allocator);
         defer argit.deinit();
         _ = argit.skip();
+        const io = io_impl.io();
         var protocols = std.ArrayListUnmanaged([]const u8){};
         var targets = std.ArrayListUnmanaged(Target){};
         var maybe_out_dir: ?[]const u8 = null;
@@ -1417,7 +1422,8 @@ const ScannerCli = struct {
         return .{
             .protocols = try protocols.toOwnedSlice(allocator),
             .targets = try targets.toOwnedSlice(allocator),
-            .out_dir = try std.fs.cwd().makeOpenPath(out_dir, .{}),
+            .out_dir = try std.Io.Dir.cwd().createDirPathOpen(io, out_dir, .{}),
+            .io = io,
         };
     }
     pub fn deinit(self: *ScannerCli, allocator: mem.Allocator) void {
@@ -1429,7 +1435,7 @@ const ScannerCli = struct {
             allocator.free(target.name);
         }
         allocator.free(self.targets);
-        self.out_dir.close();
+        self.out_dir.close(self.io);
     }
 };
 
@@ -1439,7 +1445,7 @@ pub fn main() !void {
 
     var cli = try ScannerCli.init(gpa);
     defer cli.deinit(gpa);
-    try scan(gpa, std.fs.cwd(), cli.out_dir, cli.protocols, cli.targets);
+    try scan(gpa, cli.io, std.Io.Dir.cwd(), cli.out_dir, cli.protocols, cli.targets);
 }
 
 test "parsing" {

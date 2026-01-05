@@ -26,7 +26,7 @@ pub fn build(b: *zbs) void {
                 .optimize = optimize,
             }),
         });
-        exe.linkSystemLibrary("wayland-client");
+        exe.root_module.linkSystemLibrary("wayland-client", .{});
         b.installArtifact(exe);
     }
     const exe = b.addExecutable(.{
@@ -57,13 +57,17 @@ pub fn build(b: *zbs) void {
         test_step.dependOn(&run_test.step);
     }
     {
-        const ref_all = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("src/ref_all.zig"), .target = target, .optimize = optimize }) });
+        const ref_all = b.addTest(.{ .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ref_all.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{.{ .name = "wayland", .module = scanner.module }},
+        }) });
 
-        ref_all.root_module.addImport("wayland", scanner.module);
-        ref_all.linkLibC();
-        ref_all.linkSystemLibrary("wayland-server");
-        ref_all.linkSystemLibrary("wayland-egl");
-        ref_all.linkSystemLibrary("wayland-cursor");
+        ref_all.root_module.linkSystemLibrary("wayland-server", .{});
+        ref_all.root_module.linkSystemLibrary("wayland-egl", .{});
+        ref_all.root_module.linkSystemLibrary("wayland-cursor", .{});
         const run_test = b.addRunArtifact(ref_all);
 
         test_step.dependOn(&run_test.step);
@@ -162,7 +166,7 @@ pub const ScanProtocolsStep = struct {
             const code_path = self.getCodePath(proto_path, &digest);
             if (!hit) {
                 step.result_cached = false;
-                try std.fs.cwd().makePath(std.fs.path.dirname(code_path) orelse return error.BadPath);
+                try std.Io.Dir.cwd().createDirPath(step.owner.graph.io, std.fs.path.dirname(code_path) orelse return error.BadPath);
                 _ = step.owner.run(
                     &[_][]const u8{ "wayland-scanner", "private-code", proto_path, code_path },
                 );
