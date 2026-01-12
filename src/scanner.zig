@@ -1388,8 +1388,8 @@ const ScannerCli = struct {
     targets: []const Target,
     io: std.Io,
 
-    fn init(allocator: mem.Allocator) !ScannerCli {
-        var argit = try std.process.argsWithAllocator(allocator);
+    fn init(allocator: mem.Allocator, args: std.process.Args) !ScannerCli {
+        var argit = try args.iterateAllocator(allocator);
         defer argit.deinit();
         _ = argit.skip();
         const io = io_impl.io();
@@ -1439,13 +1439,9 @@ const ScannerCli = struct {
     }
 };
 
-pub fn main() !void {
-    var general_purpose_allocator = std.heap.DebugAllocator(.{ .safety = false }){};
-    const gpa = general_purpose_allocator.allocator();
-
-    var cli = try ScannerCli.init(gpa);
-    defer cli.deinit(gpa);
-    try scan(gpa, cli.io, std.Io.Dir.cwd(), cli.out_dir, cli.protocols, cli.targets);
+pub fn main(init: std.process.Init) !void {
+    var cli = try ScannerCli.init(init.arena.allocator(), init.minimal.args);
+    try scan(init.arena.allocator(), cli.io, std.Io.Dir.cwd(), cli.out_dir, cli.protocols, cli.targets);
 }
 
 test "parsing" {
